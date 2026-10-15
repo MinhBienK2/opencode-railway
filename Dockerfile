@@ -3,14 +3,14 @@ FROM golang:1.22-alpine AS builder
 
 WORKDIR /app
 COPY go.mod ./
-COPY main.go ./
+COPY *.go ./
 
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o opencode-railway .
 
 # Run stage
 FROM alpine:3.20
 
-RUN apk --no-cache add ca-certificates tzdata tor curl
+RUN apk --no-cache add ca-certificates tzdata tor
 
 WORKDIR /app
 COPY --from=builder /app/opencode-railway /app/opencode-railway
