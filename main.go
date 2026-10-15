@@ -45,6 +45,7 @@ var (
 	lastMs       int64
 	idCounter    int64
 )
+
 type TorInstance struct {
 	SocksAddr   string
 	ControlAddr string
@@ -170,8 +171,8 @@ func initProxyAndTorPool() {
 	}
 }
 
-func getEgressInstance() (*http.Client, string) {
-	if len(torInstances) == 0 {
+func getEgressInstance(attempt int) (*http.Client, string) {
+	if len(torInstances) == 0 || (attempt >= len(torInstances) && len(torInstances) > 0) {
 		return sharedClient, ""
 	}
 	idx := atomic.AddUint32(&torIndex, 1) % uint32(len(torInstances))
@@ -374,9 +375,20 @@ func applyFingerprint(body map[string]any, model string) {
 	}
 }
 
+func setCORS(w http.ResponseWriter) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, X-Session-Id, x-opencode-client, x-opencode-project, x-opencode-request, x-opencode-session")
+}
+
 // ======================== HTTP HANDLERS ========================
 
 func chatHandler(w http.ResponseWriter, r *http.Request) {
+	setCORS(w)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -400,7 +412,6 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Client disconnected", http.StatusRequestTimeout)
 		return
 	}
-
 
 	modelIn, _ := reqData["model"].(string)
 	clientStream, _ := reqData["stream"].(bool)
@@ -439,7 +450,7 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
 		upReq.Header.Set("x-session-id", sesID)
 		upReq.Header.Set("Accept", "*/*")
 
-		client, ctrlAddr := getEgressInstance()
+		client, ctrlAddr := getEgressInstance(attempt)
 		resp, err := client.Do(upReq)
 		if err != nil {
 			log.Printf("[Attempt %d] Transport error on %s: %v", attempt, targetModel, err)
@@ -520,7 +531,11 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
 		scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
 		for scanner.Scan() {
 			text := strings.TrimSpace(scanner.Text())
-			if !strings.HasPrefix(text, "data: ") || text == "data: [DONE]" {
+			if !strings.HasPrefix(text, "data:") {
+				continue
+			}
+			payload := strings.TrimSpace(strings.TrimPrefix(text, "data:"))
+			if payload == "[DONE]" || payload == "" {
 				continue
 			}
 			var chunk struct {
@@ -541,7 +556,7 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
 					} `json:"delta"`
 				} `json:"choices"`
 			}
-			if err := json.Unmarshal([]byte(strings.TrimPrefix(text, "data: ")), &chunk); err == nil {
+			if err := json.Unmarshal([]byte(payload), &chunk); err == nil {
 				if chunk.ID != "" {
 					finalID = chunk.ID
 				}
@@ -617,6 +632,11 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func systemoneHandler(w http.ResponseWriter, r *http.Request) {
+	setCORS(w)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -641,7 +661,7 @@ func systemoneHandler(w http.ResponseWriter, r *http.Request) {
 	upstreamURL := baseZenURL + "/systemone"
 	maxAttempts := 3
 	for attempt := range maxAttempts {
-		client, ctrlAddr := getEgressInstance()
+		client, ctrlAddr := getEgressInstance(attempt)
 		sesID := newSessionID()
 		upReq, err := http.NewRequestWithContext(r.Context(), "POST", upstreamURL, bytes.NewReader(bodyBytes))
 		if err != nil {
@@ -693,6 +713,11 @@ func systemoneHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func modelsHandler(w http.ResponseWriter, r *http.Request) {
+	setCORS(w)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
 	models := []map[string]any{
 		{"id": "auto-free", "object": "model", "owned_by": "auto-dispatcher"},
 		{"id": "auto", "object": "model", "owned_by": "auto-dispatcher"},
@@ -714,7 +739,11 @@ func modelsHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func healthHandler(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
+	setCORS(w)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
 	w.Write([]byte(`{"status":"ok","gateway":"opencode-railway","concurrency":"unbounded"}`))
 }
 

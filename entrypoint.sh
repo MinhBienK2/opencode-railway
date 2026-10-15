@@ -39,7 +39,7 @@ DataDirectory $data_dir
 Log notice file /tmp/tor_$i.log
 EOF
 
-    tor -f "$tor_conf" --runasdaemon 1 || tor -f "$tor_conf" &
+    tor -f "$tor_conf" &
     pid=$!
     TOR_PIDS="$TOR_PIDS $pid"
 
@@ -55,9 +55,16 @@ done
 export TOR_INSTANCES="$TOR_INSTANCES"
 echo "[Gateway] Tor cluster configured: $TOR_INSTANCES"
 
-# Đợi 3 giây cho các node Tor khởi tạo circuit đầu tiên
-echo "[Gateway] Waiting 3s for Tor circuits to bootstrap in background..."
-sleep 3
-
+echo "[Gateway] Waiting for Tor SOCKS ports to become ready..."
+max_wait=15
+count=0
+while [ "$count" -lt "$max_wait" ]; do
+    if nc -z 127.0.0.1 9050 2>/dev/null; then
+        echo "[Gateway] Tor node 1 is online and ready on port 9050!"
+        break
+    fi
+    sleep 1
+    count=$((count + 1))
+done
 echo "[Gateway] Launching Opencode Railway Gateway..."
 exec /app/opencode-railway
