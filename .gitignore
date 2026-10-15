@@ -1,0 +1,12 @@
+# Binaries
+opencode-railway
+
+# Logs & temp
+*.log
+/tmp/
+
+# Local utility scripts
+upgrade_swap_16g.sh
+
+# Environment
+.env
