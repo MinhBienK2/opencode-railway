@@ -48,7 +48,7 @@ Upstream chỉ nhận request trông như client `opencode` (header `x-opencode-
 Không có API key; quyền truy cập dựa trên **IP client**:
 
 - `ALLOWED_IPS` = danh sách IP/CIDR phân tách bằng dấu phẩy (ví dụ `203.0.113.5,10.0.0.0/8`). `*` = mở hoàn toàn. **Để trống = chỉ loopback và mạng nội bộ** (an toàn mặc định).
-- `RATE_LIMIT_RPM` (mặc định 600) và `RATE_LIMIT_BURST` (mặc định 100): giới hạn theo IP cho các endpoint POST; vượt thì `429` + `Retry-After`.
+- `RATE_LIMIT_RPM` (mặc định 6000) và `RATE_LIMIT_BURST` (mặc định 600): giới hạn theo IP cho các endpoint POST; vượt thì `429` + `Retry-After`.
 - Phía sau proxy (Railway) `RemoteAddr` là proxy nội bộ nên IP thật lấy từ header: `CLIENT_IP_HEADER` (mặc định `X-Real-IP` khi có `RAILWAY_ENVIRONMENT`; với `X-Forwarded-For` lấy phần tử ngoài cùng bên phải). **Chỉ đặt khi gateway thật sự đứng sau proxy tin cậy**, nếu không client có thể tự khai IP. Bị từ chối thì log ghi `[Auth] DENY ip=... xff=... real-ip=...` để biết header nào mang IP thật.
 - CORS mặc định tắt; đặt `CORS_ORIGIN` nếu cần gọi từ trình duyệt.
 
@@ -67,9 +67,9 @@ Biến nên đặt: `ALLOWED_IPS=<IP máy bạn>`, `TOR_MAX=2` (mỗi Tor chiế
 | `PORT` | `8080` | Cổng lắng nghe |
 | `ALLOWED_IPS` | trống | IP/CIDR được phép (xem mục 2) |
 | `CLIENT_IP_HEADER` | tự động trên Railway | Header mang IP client thật |
-| `RATE_LIMIT_RPM` / `RATE_LIMIT_BURST` | `600` / `100` | Rate limit theo IP (`RPM=0` tắt) |
+| `RATE_LIMIT_RPM` / `RATE_LIMIT_BURST` | `6000` / `600` | Rate limit theo IP (`RPM=0` tắt) |
 | `CORS_ORIGIN` | trống (tắt) | Origin được phép CORS |
-| `MAX_CONCURRENCY` | `200` | Số request đồng thời tối đa |
+| `MAX_CONCURRENCY` | `1000` | Số request đồng thời tối đa |
 | `MAX_BODY_MB` | `32` | Kích thước body tối đa |
 | `DISABLE_TOR` | `false` | Chỉ dùng direct |
 | `FORCE_TOR` | `false` | Không dùng direct (để đo/so sánh) |

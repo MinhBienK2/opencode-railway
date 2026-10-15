@@ -58,9 +58,9 @@ func newTransport(proxy func(*http.Request) (*url.URL, error)) *http.Transport {
 			KeepAlive: 30 * time.Second,
 		}).DialContext,
 		ForceAttemptHTTP2:     true,
-		MaxIdleConns:          128,
-		MaxIdleConnsPerHost:   64,
-		IdleConnTimeout:       90 * time.Second,
+		MaxIdleConns:          1024,
+		MaxIdleConnsPerHost:   512,
+		IdleConnTimeout:       120 * time.Second,
 		TLSHandshakeTimeout:   20 * time.Second,
 		ResponseHeaderTimeout: 120 * time.Second, // không đặt Client.Timeout để stream dài không bị cắt
 		ExpectContinueTimeout: 1 * time.Second,
@@ -248,6 +248,28 @@ func newManager(ctx context.Context) *Manager {
 	direct.ready.Store(!cfg.ForceTor)
 	m.egresses = []*Egress{direct}
 	return m
+}
+
+// warmDirect giữ sẵn kết nối TLS/HTTP2 tới upstream để request đầu tiên không phải trả phí bắt tay (không đụng API nên không tốn hạn mức).
+func (m *Manager) warmDirect() {
+	t := time.NewTicker(60 * time.Second)
+	defer t.Stop()
+	for {
+		if d := m.egresses[0]; d.ready.Load() {
+			ctx, cancel := context.WithTimeout(m.ctx, 10*time.Second)
+			if req, err := http.NewRequestWithContext(ctx, http.MethodHead, "https://opencode.ai/", nil); err == nil {
+				if resp, err := d.Client().Do(req); err == nil {
+					resp.Body.Close()
+				}
+			}
+			cancel()
+		}
+		select {
+		case <-m.ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
 }
 
 func (m *Manager) snapshot() []*Egress {

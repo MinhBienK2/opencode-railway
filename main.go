@@ -653,6 +653,7 @@ func main() {
 		mode = "chỉ direct"
 	}
 	log.Printf("Egress: %s | TOR_WARM=%d TOR_MAX=%d (Tor chỉ bật khi direct nguy hiểm, tắt sau %v nhàn rỗi)", mode, cfg.TorWarm, cfg.TorMax, cfg.TorIdleStop)
+	go mgr.warmDirect()
 	if torAvailable {
 		go mgr.warmTor()
 		go mgr.reapIdleTor()

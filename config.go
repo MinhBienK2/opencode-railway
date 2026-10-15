@@ -99,7 +99,7 @@ func loadConfig() Config {
 	torMax := envInt("TOR_MAX", envInt("TOR_COUNT", 4, 0), 0)
 	c := Config{
 		Port:                 envStr("PORT", defaultPort),
-		MaxConcurrency:       envInt("MAX_CONCURRENCY", 200, 1),
+		MaxConcurrency:       envInt("MAX_CONCURRENCY", 1000, 1),
 		MaxBodyBytes:         int64(envInt("MAX_BODY_MB", 32, 1)) << 20,
 		MaxWait:              envDur("MAX_WAIT", 90*time.Second),
 		MaxAttempts:          envInt("MAX_ATTEMPTS", 30, 1),
@@ -121,8 +121,8 @@ func loadConfig() Config {
 		TorBin:               envStr("TOR_BIN", "tor"),
 		AllowedIPs:           strings.TrimSpace(os.Getenv("ALLOWED_IPS")),
 		ClientIPHeader:       envStr("CLIENT_IP_HEADER", ""),
-		RateRPM:              envInt("RATE_LIMIT_RPM", 600, 0),
-		RateBurst:            envInt("RATE_LIMIT_BURST", 100, 1),
+		RateRPM:              envInt("RATE_LIMIT_RPM", 6000, 0),
+		RateBurst:            envInt("RATE_LIMIT_BURST", 600, 1),
 		CORSOrigin:           strings.TrimSpace(os.Getenv("CORS_ORIGIN")),
 		InjectToolsAnthropic: envBoolDef("INJECT_TOOLS_ANTHROPIC", true),
 	}
