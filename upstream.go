@@ -250,8 +250,9 @@ func forward(ctx context.Context, model string, isPool bool, url, accept, key st
 			return nil, gerr
 		}
 
+		payload := prep(m)
 		actx, cancel := context.WithCancel(ctx)
-		req, err := http.NewRequestWithContext(actx, http.MethodPost, url, bytes.NewReader(prep(m)))
+		req, err := http.NewRequestWithContext(actx, http.MethodPost, url, bytes.NewReader(payload))
 		if err != nil {
 			cancel()
 			return nil, &gwError{status: http.StatusInternalServerError, typ: "internal_error", msg: "build request"}
@@ -266,11 +267,13 @@ func forward(ctx context.Context, model string, isPool bool, url, accept, key st
 		}
 		gen := e.gen.Load()
 		start := time.Now()
-		// Circuit Tor kẹt (chưa có header sau TTFB_RETRY): bỏ, đổi exit và thử đường khác thay vì để client chờ.
-		// Trên các lần thử lại (attempt > 0), siết timeout ttfb xuống tối đa 6s để không treo client nếu trúng circuit nghẽn.
+		// Circuit Tor kẹt (chưa có header sau ttfbLimit): bỏ, đổi exit và thử đường khác thay vì để client chờ.
+		// Với prompt lớn (như omp gửi 70k-100k token, payload 200KB-400KB), upstream cần 15-30s để xử lý context.
 		ttfbLimit := cfg.TtfbRetry
-		if attempt > 0 && ttfbLimit > 6*time.Second {
-			ttfbLimit = 6 * time.Second
+		if bodyLen := len(payload); bodyLen > 100*1024 && ttfbLimit < 45*time.Second {
+			ttfbLimit = 45 * time.Second
+		} else if bodyLen > 30*1024 && ttfbLimit < 30*time.Second {
+			ttfbLimit = 30 * time.Second
 		}
 		var slow atomic.Bool
 		var slowTimer *time.Timer
