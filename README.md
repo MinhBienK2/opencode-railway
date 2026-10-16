@@ -149,6 +149,10 @@ Direct nhanh hơn khoảng 1,5–2 lần nên mặc định là direct trước,
 - Khi vượt trần, gateway chuyển sang Tor (dựng 2 Tor song song ngay khi direct 429, hoặc bật sẵn từ `DIRECT_WARN_REQS`). Một đợt 700 request/150 đồng thời vượt trần: 700/700 thành công, không lỗi phía client, nhưng đuôi trễ p95 ≈ 33 s do chờ Tor bootstrap.
 - Dồn liên tục hơn ~2.000 request trong vài phút làm cạn cả direct lẫn nhiều exit Tor: một phần request nhận 429 kèm `Retry-After` (không treo). Muốn tải bền vững cao hơn cần thêm IP thoát (proxy tĩnh `PROXY_POOL`) hoặc dùng nhiều model.
 
+## Endpoint hỗ trợ
+
+`POST /v1/messages` (Anthropic, stream + không stream, tool use, thinking, ảnh, `count_tokens`), `POST /v1/chat/completions` (OpenAI), `POST /v1/responses` (OpenAI Responses: input chuỗi/mảng, `instructions`, function tool, stream đủ sự kiện — dùng được với Codex), `POST /v1/completions` (cũ; model có reasoning cần `max_tokens` đủ lớn vì phần suy luận cũng tính vào), `GET /v1/models[/{id}]`, `/health`, `/status`. Đường dẫn lạ trả JSON `404`, thiếu `messages` trả `400`.
+
 ## Kịch bản lỗi đã kiểm thử
 
 Mỗi kịch bản có test tự động (`scenario_test.go`, upstream giả) và những kịch bản đánh dấu (live) đã chạy thật:
