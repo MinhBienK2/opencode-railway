@@ -17,7 +17,7 @@ Model dùng được: `deepseek` (alias của `deepseek-v4.1-flash`, khuyên dù
 
 ### Egress: direct trước, Tor khi bị 429
 
-Hạn mức free tier của upstream tính theo **IP thoát ra × model, đếm theo ngày và reset lúc 00:00 UTC** (07:00 giờ Việt Nam). Gateway dựa vào đó:
+Hạn mức free tier của upstream tính theo **IP thoát ra × model** (không phụ thuộc session/device ID), và là cửa sổ trượt chứ không phải mốc cố định: IP direct bị 429 hồi phục sau một thời gian không dùng (đã quan sát phục hồi giữa ngày, không cần chờ 00:00 UTC). Gateway dựa vào đó:
 
 1. Mọi request đi **IP direct** của container trước (nhanh nhất).
 2. Khi direct trả `429` cho model đó, gateway ghi cooldown cho cặp **(direct × model)** và chuyển ngay sang **Tor**. Model khác vẫn dùng direct bình thường. Cooldown theo `Retry-After` của upstream, nhưng tối đa `COOLDOWN_MAX` (mặc định 10 phút) rồi thăm dò lại bằng **đúng 1 request** (WAN kép có thể đổi IP).
@@ -116,7 +116,7 @@ Test tự động: `go test -race ./...` (upstream giả, kiểm tra auth, dịc
 
 ## 6. Giới hạn free tier (đo thực tế 2026-10-15/16)
 
-- **Quota theo IP × model, đếm theo ngày, reset 00:00 UTC.** Khi hết, `429 FreeUsageLimitError` kèm `Retry-After` đếm ngược về mốc đó.
+- **Quota theo IP × model, cửa sổ trượt.** Khi hết, `429 FreeUsageLimitError` (có thể kèm `Retry-After`); gateway đặt cooldown theo đó nhưng chặn trần bằng `COOLDOWN_MAX` vì IP hồi phục sớm hơn con số báo.
 - **IP direct dùng chung hạn mức với mọi dịch vụ khác chạy trên cùng IP** (ví dụ một gateway khác trên cùng máy).
 - **Exit Tor là tài nguyên dùng chung của mọi người dùng Tor**; vào những ngày nhiều người dùng free tier, phần lớn exit đã cạn quota nên Tor chỉ là dự phòng không chắc chắn: có thể thử nhiều circuit mới trúng một exit còn quota. Cần ổn định thì dùng proxy xoay trả phí qua `PROXY_POOL`.
 - Qua Tor, thời gian tới byte đầu tiên khoảng 1–4 giây (direct khoảng 0,7–1,5 giây).
@@ -124,3 +124,13 @@ Test tự động: `go test -race ./...` (upstream giả, kiểm tra auth, dịc
 ## 7. Lưu ý sử dụng
 
 Gateway giả danh client `opencode` và đổi egress để né giới hạn theo IP của free tier. Việc này có thể vi phạm điều khoản của nhà cung cấp và Tor exit là IP dùng chung. Chỉ dùng khi bạn được phép và chịu trách nhiệm.
+
+## Số đo direct vs Tor (deepseek, task 4 turn qua Claude Code, 2026-10-16)
+
+| Chế độ | Thời gian task | Ghi chú |
+|---|---|---|
+| direct | 9–11 s | ttfb thường 0,7–2,7 s |
+| tor (2 instance) | 11–23 s | ttfb thường 1,8–6 s; 0 lỗi 429 lúc đo |
+| hybrid (direct trước) | 17–25 s | cả 9 request đều đi direct, không cần Tor |
+
+Direct nhanh hơn khoảng 1,5–2 lần nên mặc định là direct trước, Tor chỉ làm đường dự phòng. `opencode2api` (dự án tham khảo) cũng đổi IP, chỉ khác là nó dùng 9 daemon Tor × 144 identity xoay vòng và bỏ identity vừa bị 429 ngay.
