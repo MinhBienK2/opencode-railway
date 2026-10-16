@@ -597,6 +597,24 @@ func TestSystemBillingHeaderStripped(t *testing.T) {
 	}
 }
 
+func TestSystemTotalTokensStripped(t *testing.T) {
+	var req map[string]any
+	json.Unmarshal([]byte(`{"system":[{"type":"text","text":"You are helpful"},{"type":"text","text":"<total_tokens>14998783 tokens left</total_tokens>"}],"messages":[{"role":"user","content":"hi"}]}`), &req)
+	out := anthropicToOpenAI(req, "m")
+	sys := out["messages"].([]any)[0].(map[string]any)["content"].(string)
+	if sys != "You are helpful" {
+		t.Errorf("<total_tokens> phải bị bỏ khỏi system để giữ nguyên prefix cache, got %q", sys)
+	}
+
+	var req2 map[string]any
+	json.Unmarshal([]byte(`{"system":"Prompt prefix.\n<total_tokens>15000000 tokens left</total_tokens>","messages":[{"role":"user","content":"hi"}]}`), &req2)
+	out2 := anthropicToOpenAI(req2, "m")
+	sys2 := out2["messages"].([]any)[0].(map[string]any)["content"].(string)
+	if sys2 != "Prompt prefix." {
+		t.Errorf("total_tokens trong chuỗi đơn phải bị bỏ, got %q", sys2)
+	}
+}
+
 func TestImageDowngradedForTextOnlyModels(t *testing.T) {
 	var req map[string]any
 	json.Unmarshal([]byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"look"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AAA"}}]}]}`), &req)

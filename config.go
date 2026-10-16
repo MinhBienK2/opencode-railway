@@ -110,7 +110,7 @@ func loadConfig() Config {
 		MaxBodyBytes:         int64(envInt("MAX_BODY_MB", 32, 1)) << 20,
 		MaxWait:              envDur("MAX_WAIT", 90*time.Second),
 		MaxAttempts:          envInt("MAX_ATTEMPTS", 30, 1),
-		StreamIdle:           envDur("STREAM_IDLE_TIMEOUT", 120*time.Second),
+		StreamIdle:           envDur("STREAM_IDLE_TIMEOUT", 180*time.Second),
 		SessionIDMode:        strings.ToLower(envStr("SESSION_ID_MODE", "client")),
 		ProjectIDMode:        strings.ToLower(envStr("PROJECT_ID_MODE", "client")),
 		ImageModels:          map[string]bool{},

@@ -20,6 +20,7 @@ import (
 const stubDescription = "Internal compatibility stub. Never call this tool; use the other tools provided instead."
 
 var modelSuffixRe = regexp.MustCompile(`\[[^\]]*\]$`)
+var totalTokensRe = regexp.MustCompile(`(?s)<total_tokens>.*?</total_tokens>\s*`)
 
 // anthropicModel chuẩn hóa tên model từ Claude Code: "deepseek[1m]" -> "deepseek",
 // "cline-free/deepseek-v4.1-flash" -> "deepseek-v4.1-flash", tên claude-* -> model mặc định.
@@ -86,17 +87,34 @@ func blockText(v any) string {
 	return ""
 }
 
-// systemText gom system prompt, bỏ block x-anthropic-billing-header (Claude Code đổi giá trị mỗi request, làm hỏng cache prefix).
+// systemText gom system prompt, bỏ block x-anthropic-billing-header và thẻ <total_tokens>...
+// (Claude Code đổi các giá trị này mỗi request, làm hỏng hoàn toàn cache prefix của KV cache upstream).
 func systemText(v any) string {
 	blocks, ok := v.([]any)
 	if !ok {
-		return blockText(v)
+		s := blockText(v)
+		if strings.Contains(s, "<total_tokens>") {
+			s = strings.TrimSpace(totalTokensRe.ReplaceAllString(s, ""))
+		}
+		return s
 	}
 	var kept []any
 	for _, b := range blocks {
 		if bm, _ := b.(map[string]any); bm != nil {
-			if t, _ := bm["text"].(string); strings.HasPrefix(strings.TrimSpace(t), "x-anthropic-billing-header") {
+			t, _ := bm["text"].(string)
+			trimmed := strings.TrimSpace(t)
+			if strings.HasPrefix(trimmed, "x-anthropic-billing-header") {
 				continue
+			}
+			if strings.HasPrefix(trimmed, "<total_tokens>") && strings.HasSuffix(trimmed, "</total_tokens>") {
+				continue
+			}
+			if strings.Contains(t, "<total_tokens>") {
+				t = strings.TrimSpace(totalTokensRe.ReplaceAllString(t, ""))
+				if t == "" {
+					continue
+				}
+				b = map[string]any{"type": "text", "text": t}
 			}
 		}
 		kept = append(kept, b)

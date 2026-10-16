@@ -69,10 +69,12 @@ func newTransport(proxy func(*http.Request) (*url.URL, error)) *http.Transport {
 		ForceAttemptHTTP2:     true,
 		MaxIdleConns:          1024,
 		MaxIdleConnsPerHost:   512,
-		IdleConnTimeout:       120 * time.Second,
-		TLSHandshakeTimeout:   20 * time.Second,
-		ResponseHeaderTimeout: 120 * time.Second, // không đặt Client.Timeout để stream dài không bị cắt
+		IdleConnTimeout:       180 * time.Second,
+		TLSHandshakeTimeout:   25 * time.Second,
+		ResponseHeaderTimeout: 180 * time.Second, // không đặt Client.Timeout để stream dài không bị cắt
 		ExpectContinueTimeout: 1 * time.Second,
+		WriteBufferSize:       64 * 1024,
+		ReadBufferSize:        64 * 1024,
 	}
 }
 
