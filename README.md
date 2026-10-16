@@ -19,13 +19,16 @@ Model dùng được: `deepseek` (alias của `deepseek-v4.1-flash`, khuyên dù
 
 Hạn mức free tier của upstream tính theo **IP thoát ra × model** (không phụ thuộc session/device ID), là cửa sổ trượt (~470 request/2 phút/model trên 1 IP; IP bị 429 hồi phục sau 1–2 phút). Prompt cache của upstream theo **prefix** chứ không theo IP/session (đã đo: đổi session và đổi exit vẫn `cached=4608/4668`), nên gateway chỉ cần chia tải theo độ trễ, không cần gắn hội thoại với egress. Gateway dựa vào đó để chịu tải lớn:
 
-1. Gateway tự chạy và giám sát các **daemon Tor**. Mỗi daemon có `TOR_IDENTITIES` (mặc định 8) **identity**: mỗi identity có username SOCKS riêng nên có circuit/exit IP riêng, tức hạn mức riêng. Dung lượng = số daemon × số identity × ~470 req/2 phút.
-2. Tor đơn luồng nên 1 daemon chỉ chịu tốt ~25 request đồng thời. Gateway chạy sẵn `TOR_WARM` (2) daemon, **tự thêm daemon** khi tải trung bình vượt `TOR_LOAD` (24) mỗi daemon, tới `TOR_MAX` (6); daemon nhàn rỗi quá `TOR_IDLE_STOP` thì tắt. Mỗi identity được dựng sẵn circuit + kết nối TLS lúc khởi động nên request đầu không phải chờ.
-3. Chọn identity theo **ttfb trung bình trượt × tải hiện tại**. Identity có circuit chậm hơn hẳn trung vị (>2,5×) tự bị đổi exit, nên theo thời gian chỉ còn exit nhanh. Request chưa có header sau `TTFB_RETRY` (15s) thì bỏ circuit đó và thử identity khác.
-4. Identity bị 429 thì đổi circuit tức thì (đổi username SOCKS, không cần `NEWNYM`) và request được thử lại ngay trên identity khác; client không thấy lỗi. 429 đồng thời của cùng một sự kiện chỉ tính 1 lần, nếu chuỗi 429 kéo dài thì giãn dần (`TOR_BACKOFF_MAX`).
-5. **Direct** chỉ được dùng khi Tor chưa sẵn sàng hoặc mọi identity đều đang nghỉ (đường dự phòng, không để client chờ). Đặt `PREFER_DIRECT=true` để đảo ngược: direct trước (nhanh nhất khi IP còn hạn mức), Tor khi bị 429; khi đó Tor được bật sẵn theo `DIRECT_WARN_REQS`.
+1. Gateway tự chạy và giám sát các **daemon Tor**. Mỗi daemon có `TOR_IDENTITIES` (mặc định 16) **identity**: mỗi identity có username SOCKS riêng nên có circuit/exit IP riêng, tức hạn mức riêng. Dung lượng = số daemon × số identity × ~470 req/2 phút.
+2. Tor đơn luồng nên 1 daemon chỉ chịu tốt ~25 request đồng thời. Gateway chạy sẵn `TOR_WARM` (6) daemon, **tự thêm daemon** khi tải trung bình vượt `TOR_LOAD` (25) mỗi daemon, tới `TOR_MAX` (10); daemon nhàn rỗi quá `TOR_IDLE_STOP` thì tắt (luôn giữ tối thiểu `TOR_WARM` để không bị cold start). Mỗi identity được dựng sẵn circuit + kết nối TLS lúc khởi động nên request đầu không phải chờ.
+3. Chọn identity theo **ttfb trung bình trượt × tải hiện tại** kèm **Daemon-Aware Picking** (khi 1 daemon bị 429, retry sẽ tự động nhảy sang daemon khác để tránh dồn vào cùng 1 exit). Identity có circuit chậm hơn hẳn trung vị (>2,5×) tự bị đổi exit.
+4. Identity bị 429 thì đổi circuit tức thì (đổi username SOCKS, không cần `NEWNYM`) và request được thử lại ngay trên identity của daemon khác; client không thấy lỗi.
+5. **Direct** chỉ được dùng khi Tor chưa sẵn sàng hoặc mọi identity đều đang nghỉ (đường dự phòng, không để client chờ). Đặt `PREFER_DIRECT=true` để đảo ngược: direct trước (nhanh nhất khi IP còn hạn mức), Tor khi bị 429.
 6. Hết đường thì chờ (tối đa `MAX_WAIT`); nếu không còn gì để chờ thì trả `429` kèm `Retry-After` ngay, không để client treo.
-7. **`TOR_EXIT_NODES`** (ví dụ `{sg},{jp},{hk},{kr}`) giới hạn quốc gia exit. Đo từ Việt Nam: exit châu Á có ttfb p50 ≈ 1,5 s, châu Âu ≈ 2,7 s, toàn cầu ≈ 3,1 s, Mỹ/Canada ≈ 3,8 s. Cứ mỗi daemon thứ 3 vẫn để exit toàn cầu làm nguồn IP dự phòng khi nhóm quốc gia bị cạn hạn mức.
+7. **Ma trận Exit Nodes 3 cấp**:
+   - **Châu Á (`idx%3 == 1`)**: `{sg},{jp},{hk},{kr}` (ping thấp nhất ~1.5s).
+   - **Tây Âu (`idx%3 == 2`)**: `{de},{nl},{fr},{gb},{ch}` (bể exit IP gigabit khổng lồ, rất ít khi 429, ~2.5s).
+   - **Toàn cầu (`idx%3 == 0`)**: Exit toàn cầu làm nguồn IP dự phòng khi các nhóm quốc gia bị cạn hạn mức.
 
 Đo thực tế (deepseek, exit châu Á, 2026-10-16): 3.000 request ở 300 đồng thời → 100% thành công, ~43 req/s, ttfb p50 ≈ 3,5 s (p95 9 s), 524 lần 429 được hấp thụ bằng đổi identity, tự mở rộng lên 5 daemon, RAM ~540 MB. Với 100 đồng thời: ttfb p50 ≈ 1,5 s.
 
@@ -41,8 +44,8 @@ Upstream chỉ nhận request trông như client `opencode` (header `x-opencode-
 - Dịch Anthropic ⇄ OpenAI: system, `tool_use`/`tool_result` (kể cả song song), thinking (`reasoning_content` ⇄ block `thinking`), `stop_reason`, usage (`cache_read_input_tokens` lấy từ cache upstream).
 - Tên model của Claude Code được chuẩn hóa: `deepseek[1m]` → `deepseek`, mọi tên `claude-*` → `DEFAULT_MODEL` (mặc định `deepseek`).
 - Tool stub bơm vào có mô tả "đừng gọi"; nếu model vẫn gọi, gateway dịch ngược về tool của client (`bash→Bash`, `read→Read` kèm `filePath→file_path`...).
-- Bỏ block `x-anthropic-billing-header` trong system prompt (đổi mỗi request, làm hỏng cache prefix); bỏ `tool_use` không có kết quả và kết quả mồ côi; ảnh được hạ thành `[image attached]` với model chỉ nhận text (đặt `IMAGE_MODELS` cho model có vision).
-- Stream đứt giữa chừng được báo bằng `event: error` (client tự retry), không giả làm câu trả lời hoàn chỉnh. Upstream im lặng quá `STREAM_IDLE_TIMEOUT` thì hủy để không giữ slot mãi.
+- Bỏ block `x-anthropic-billing-header` và thẻ `<total_tokens>...` trong system prompt (thay đổi mỗi request, làm hỏng cache prefix); bỏ `tool_use` không có kết quả và kết quả mồ côi; ảnh được hạ thành `[image attached]` với model chỉ nhận text (đặt `IMAGE_MODELS` cho model có vision).
+- Stream đứt giữa chừng được báo bằng `event: error` (client tự retry), không giả làm câu trả lời hoàn chỉnh. Timeout TTFB tự động thích ứng theo độ dài payload (lên tới 45s cho prompt >100KB như omp context lớn), tránh ngắt sớm gây 529.
 - Chưa hỗ trợ: server tool của Anthropic (`web_search`, `web_fetch` chạy phía server) bị bỏ qua; ảnh trong `tool_result` chỉ còn ghi chú văn bản.
 
 ## 2. Xác thực theo IP
@@ -75,25 +78,26 @@ Biến nên đặt: `ALLOWED_IPS=<IP máy bạn>`, `TOR_WARM=1 TOR_MAX=2 TOR_IDE
 | `MAX_BODY_MB` | `32` | Kích thước body tối đa |
 | `DISABLE_TOR` | `false` | Chỉ dùng direct |
 | `FORCE_TOR` | `false` | Không dùng direct (để đo/so sánh) |
-| `TOR_WARM` | `2` | Số daemon Tor chạy sẵn lúc khởi động |
-| `TOR_IDENTITIES` | `8` | Số identity (exit IP riêng) mỗi daemon |
-| `TOR_LOAD` | `24` | Request đồng thời/daemon, vượt thì tự bật thêm daemon |
-| `TOR_EXIT_NODES` | trống | Giới hạn quốc gia exit, vd `{sg},{jp},{hk},{kr}` |
+| `TOR_WARM` | `6` | Số daemon Tor chạy sẵn lúc khởi động |
+| `TOR_IDENTITIES` | `16` | Số identity (exit IP riêng) mỗi daemon |
+| `TOR_LOAD` | `25` | Request đồng thời/daemon, vượt thì tự bật thêm daemon |
+| `TOR_EXIT_NODES` | `{sg},{jp},{hk},{kr}` | Giới hạn quốc gia exit châu Á |
+| `TOR_EXIT_NODES_EU` | `{de},{nl},{fr},{gb},{ch}` | Giới hạn quốc gia exit Tây Âu |
 | `TTFB_RETRY` | `15s` | Tor chưa có header sau thời gian này thì đổi circuit |
 | `PREFER_DIRECT` | `false` | `true`: direct trước, Tor khi 429 |
 | `TOR_IDLE_STOP` | `30m` | Tor nhàn rỗi quá lâu thì tắt |
-| `TOR_MAX_INFLIGHT` | `16` | Trần request đồng thời mỗi identity |
+| `TOR_MAX_INFLIGHT` | `24` | Trần request đồng thời mỗi identity |
 | `DIRECT_WARN_REQS` | `150` | (PREFER_DIRECT) request direct/model trong 2 phút được coi là gần ngưỡng nguy hiểm |
 | `DIRECT_WARN_INFLIGHT` | `60` | Request direct đồng thời được coi là nguy hiểm |
 | `QUEUE_WAIT` | `30s` | Chờ slot tối đa trước khi trả 503 |
-| `TOR_MAX` (hoặc `TOR_COUNT`) | `6` | Số daemon Tor tối đa (mỗi daemon ~100 MB RAM) |
+| `TOR_MAX` (hoặc `TOR_COUNT`) | `10` | Số daemon Tor tối đa (tối ưu ngân sách 3GB RAM) |
 | `TOR_BIN` | `tor` | Đường dẫn binary Tor |
 | `TOR_BACKOFF_MAX` | `2m` | Trần giãn nhịp của Tor sau chuỗi 429 |
 | `TOR_INSTANCES` | trống | Tor ngoài có sẵn, dạng `host:socks,host:socks` |
 | `PROXY_POOL` | trống | Proxy ngoài (URL `socks5://`, `http://`), cách nhau bằng dấu phẩy |
 | `COOLDOWN_MAX` | `2m` | Trần cooldown của direct/proxy tĩnh |
 | `MAX_WAIT` / `MAX_ATTEMPTS` | `90s` / `30` | Chờ tối đa / số lần thử mỗi request |
-| `STREAM_IDLE_TIMEOUT` | `120s` | Hủy stream upstream im lặng quá lâu |
+| `STREAM_IDLE_TIMEOUT` | `180s` | Hủy stream upstream im lặng quá lâu |
 | `SESSION_ID_MODE` / `PROJECT_ID_MODE` | `client` | `client`, `fresh` hoặc `stable` |
 | `DEFAULT_MODEL` | `deepseek` | Model dùng cho tên `claude-*` ở `/v1/messages` |
 | `IMAGE_MODELS` | trống | Danh sách model nhận ảnh |
