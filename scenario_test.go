@@ -77,19 +77,19 @@ func TestScenarioPartialExhaustion(t *testing.T) {
 	}
 }
 
-// S3: 502/503 từ 1 exit → thử identity khác.
+// S3: 500/502/503 từ 1 exit → thử identity khác.
 func TestScenarioUpstream5xxRetriesElsewhere(t *testing.T) {
 	_, url := torSetup(t, 3, func(w http.ResponseWriter, r *http.Request) {
 		switch r.Header.Get("X-Test-Egress") {
 		case "t.1":
-			w.WriteHeader(502)
+			w.WriteHeader(500)
 		case "t.2":
-			w.WriteHeader(503)
+			w.WriteHeader(502)
 		default:
 			okChat(w)
 		}
 	})
-	for i := 0; i < 6; i++ {
+	for i := range 6 {
 		if resp, _ := post(t, url+"/v1/chat/completions", chatReq); resp.StatusCode != 200 {
 			t.Fatalf("req %d: %d", i, resp.StatusCode)
 		}

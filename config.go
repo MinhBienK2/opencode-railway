@@ -48,6 +48,7 @@ type Config struct {
 	CORSOrigin     string
 
 	// /v1/messages: bơm 4 tool stub của opencode (bash/glob/grep/read). Upstream (FreeTier gate) bắt buộc có.
+	DefaultModel         string
 	InjectToolsAnthropic bool
 }
 
@@ -131,6 +132,7 @@ func loadConfig() Config {
 		RateRPM:              envInt("RATE_LIMIT_RPM", 6000, 0),
 		RateBurst:            envInt("RATE_LIMIT_BURST", 600, 1),
 		CORSOrigin:           strings.TrimSpace(os.Getenv("CORS_ORIGIN")),
+		DefaultModel:         envStr("DEFAULT_MODEL", "deepseek"),
 		InjectToolsAnthropic: envBoolDef("INJECT_TOOLS_ANTHROPIC", true),
 	}
 	for _, m := range splitList(os.Getenv("IMAGE_MODELS")) {

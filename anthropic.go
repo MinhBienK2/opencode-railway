@@ -28,7 +28,11 @@ func anthropicModel(name string) string {
 	if i := strings.LastIndex(n, "/"); i >= 0 {
 		n = n[i+1:]
 	}
-	if n == "" || strings.HasPrefix(n, "claude") {
+	if n == "" || strings.HasPrefix(n, "claude") || strings.HasPrefix(n, "sonnet") ||
+		strings.HasPrefix(n, "opus") || strings.HasPrefix(n, "haiku") || strings.HasPrefix(n, "gpt-") {
+		if cfg.DefaultModel != "" {
+			return cfg.DefaultModel
+		}
 		return envStr("DEFAULT_MODEL", "deepseek")
 	}
 	return n

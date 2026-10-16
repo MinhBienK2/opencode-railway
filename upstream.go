@@ -90,12 +90,27 @@ func firstSeenMs(key string) int64 {
 	if ts, ok := sessionClock.first[key]; ok {
 		return ts
 	}
+	now := time.Now().UnixMilli()
 	if len(sessionClock.first) >= 8192 {
-		sessionClock.first = map[string]int64{}
+		cutoff := now - 24*3600*1000
+		for k, v := range sessionClock.first {
+			if v < cutoff {
+				delete(sessionClock.first, k)
+			}
+		}
+		if len(sessionClock.first) >= 6000 {
+			count := 0
+			for k := range sessionClock.first {
+				delete(sessionClock.first, k)
+				count++
+				if count >= 3000 {
+					break
+				}
+			}
+		}
 	}
-	ts := time.Now().UnixMilli()
-	sessionClock.first[key] = ts
-	return ts
+	sessionClock.first[key] = now
+	return now
 }
 
 // sessionIDAt dựng session ID hợp lệ (ses_ + 12 hex TypeID-descending + 14 base62) từ timestamp và hash của khoá.
@@ -297,8 +312,8 @@ func forward(ctx context.Context, model string, isPool bool, url, accept, key st
 				msg: "Rate limited on all egress paths. Retry shortly.", retryAfter: d}
 			continue
 
-		case resp.StatusCode == http.StatusBadGateway || resp.StatusCode == http.StatusServiceUnavailable ||
-			resp.StatusCode == http.StatusGatewayTimeout:
+		case resp.StatusCode == http.StatusInternalServerError || resp.StatusCode == http.StatusBadGateway ||
+			resp.StatusCode == http.StatusServiceUnavailable || resp.StatusCode == http.StatusGatewayTimeout:
 			resp.Body.Close()
 			cancel()
 			e.inflight.Add(-1)

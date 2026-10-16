@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -73,7 +74,7 @@ func resolveModelName(name string) (resolved string, isPool bool) {
 		return "space-bunny-free", false
 	case "mimo", "mimo-v2.6-flash":
 		return "mimo-v2.6-flash-free", false
-	case "deepseek", "deepseek-v4.1-flash", "deepseek-v4.1", "deepseek-flash":
+	case "deepseek", "deepseek-v4.1-flash", "deepseek-v4.1", "deepseek-flash", "deepseek-chat", "deepseek-reasoner":
 		return "deepseek-v4.1-flash-free", false
 	case "jev", "jev-1.13":
 		return "jev-1.13-free", false
@@ -88,6 +89,19 @@ func resolveModelName(name string) (resolved string, isPool bool) {
 				return p, false
 			}
 		}
+	}
+	// Hỗ trợ alias linh hoạt: claude-*, gpt-*, o1*, o3*, sonnet*, opus*, haiku* -> trỏ về defaultModel (deepseek)
+	if strings.HasPrefix(clean, "claude") || strings.HasPrefix(clean, "gpt-") ||
+		strings.HasPrefix(clean, "o1") || strings.HasPrefix(clean, "o3") ||
+		strings.HasPrefix(clean, "sonnet") || strings.HasPrefix(clean, "opus") || strings.HasPrefix(clean, "haiku") {
+		def := cfg.DefaultModel
+		if def == "" {
+			def = "deepseek"
+		}
+		if def == "deepseek" || def == "deepseek-v4.1-flash" {
+			return "deepseek-v4.1-flash-free", false
+		}
+		return def, false
 	}
 	return clean, false
 }
@@ -626,6 +640,12 @@ func buildMux() *http.ServeMux {
 
 func main() {
 	cfg = loadConfig()
+	// Dọn dẹp các thư mục tạm tor cũ từ phiên trước nếu có
+	if matches, err := filepath.Glob(filepath.Join(os.TempDir(), "tor-gw-*")); err == nil {
+		for _, d := range matches {
+			_ = os.RemoveAll(d)
+		}
+	}
 	concurrencySem = make(chan struct{}, cfg.MaxConcurrency)
 
 	allow, err := parseAllowlist(cfg.AllowedIPs)

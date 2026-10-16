@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -42,6 +43,7 @@ type Egress struct {
 	inflight atomic.Int32
 	lastUsed atomic.Int64       // unix nano của lần dùng gần nhất (để tắt Tor nhàn rỗi)
 	stop     context.CancelFunc // dừng Tor do gateway tự chạy (chỉ ở leader)
+	dataDir  string             // thư mục tạm của daemon Tor (để dọn dẹp khi tắt)
 	latMu    sync.Mutex
 	latEwma  time.Duration // trung bình trượt ttfb của circuit hiện tại
 	latN     int
@@ -666,6 +668,13 @@ func (m *Manager) reapIdleTor() {
 			if e.stop == nil || e.groupInflight() > 0 || !e.ready.Load() {
 				continue
 			}
+			// Giữ lại tối thiểu TOR_WARM daemon để không bị cold-start (10-45s) khi người dùng quay lại
+			m.mu.RLock()
+			spawned := m.torSpawned
+			m.mu.RUnlock()
+			if spawned <= cfg.TorWarm {
+				continue
+			}
 			if idle := time.Since(time.Unix(0, e.groupLastUsed())); idle > cfg.TorIdleStop {
 				log.Printf("[%s] nhàn rỗi %v, tắt để nhường RAM", e.Name, idle.Round(time.Second))
 				m.removeTor(e)
@@ -694,5 +703,8 @@ func (m *Manager) removeTor(e *Egress) {
 	m.mu.Unlock()
 	if e.stop != nil {
 		e.stop()
+	}
+	if e.dataDir != "" {
+		_ = os.RemoveAll(e.dataDir)
 	}
 }

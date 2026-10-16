@@ -80,8 +80,8 @@ func (m *Manager) startTor(idx int) error {
 	e := group[0]
 
 	dir := filepath.Join(os.TempDir(), fmt.Sprintf("tor-gw-%d", idx))
+	e.dataDir = dir
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
 	}
 	conf := filepath.Join(dir, "torrc")
 	// MaxCircuitDirtiness dài: exit còn quota thì giữ lâu, chỉ đổi khi bị 429.
@@ -108,9 +108,19 @@ func (m *Manager) startTor(idx int) error {
 
 // superviseTor chạy tor, đánh dấu ready khi bootstrap 100%, tự khởi động lại khi tor chết.
 func (m *Manager) superviseTor(ctx context.Context, e *Egress, conf string) {
-	defer m.wg.Done()
-	backoff := 2 * time.Second
 	first := true
+	defer func() {
+		m.wg.Done()
+		if first {
+			m.mu.Lock()
+			m.torStarting--
+			m.mu.Unlock()
+		}
+		if e.dataDir != "" {
+			_ = os.RemoveAll(e.dataDir)
+		}
+	}()
+	backoff := 2 * time.Second
 	for ctx.Err() == nil {
 		cmd := exec.CommandContext(ctx, cfg.TorBin, "-f", conf)
 		cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
@@ -150,6 +160,12 @@ func (m *Manager) superviseTor(ctx context.Context, e *Egress, conf string) {
 				}
 			}
 			_ = cmd.Wait()
+		}
+		if first {
+			m.mu.Lock()
+			m.torStarting--
+			m.mu.Unlock()
+			first = false
 		}
 		e.setGroupReady(false)
 		if ctx.Err() != nil {

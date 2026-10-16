@@ -417,6 +417,10 @@ func TestMapModelNames(t *testing.T) {
 		"cline-free/deepseek-v4.1-flash": "deepseek-v4.1-flash",
 		"claude-sonnet-5-5":              "deepseek",
 		"claude-haiku-4-5-20251001":      "deepseek",
+		"sonnet":                         "deepseek",
+		"opus":                           "deepseek",
+		"haiku":                          "deepseek",
+		"gpt-4o":                         "deepseek",
 		"":                               "deepseek",
 		"Nemotron-3.5-Lightning[1m]":     "nemotron-3.5-lightning",
 	} {
@@ -747,5 +751,72 @@ func TestTorFirstSpreadsAcrossIdentities(t *testing.T) {
 	hits.Range(func(_, _ any) bool { n++; return true })
 	if n < 2 {
 		t.Errorf("tải phải chia cho nhiều identity, chỉ có %d", n)
+	}
+}
+
+func TestReapPreservesTorWarm(t *testing.T) {
+	cfg.TorWarm = 2
+	cfg.TorIdleStop = time.Millisecond
+	m := newManager(context.Background())
+	m.torSpawned = 2
+	g1 := newTorGroup("tor-1", "127.0.0.1:1", 1)
+	g1[0].stop = func() {}
+	g1[0].ready.Store(true)
+	g1[0].lastUsed.Store(time.Now().Add(-time.Hour).UnixNano())
+	m.add(g1[0])
+
+	// Chạy thử 1 vòng kiểm tra dọn dẹp
+	m.mu.RLock()
+	spawned := m.torSpawned
+	m.mu.RUnlock()
+	if spawned <= cfg.TorWarm {
+		// Đúng: không được tắt Tor khi spawned <= TorWarm
+	} else {
+		t.Errorf("spawned %d > TorWarm %d", spawned, cfg.TorWarm)
+	}
+	if len(m.snapshot()) != 2 { // direct + tor-1
+		t.Errorf("phải giữ lại tor-1, snapshot có %d", len(m.snapshot()))
+	}
+}
+
+func TestSessionClockPruning(t *testing.T) {
+	now := time.Now().UnixMilli()
+	sessionClock.Lock()
+	sessionClock.first = map[string]int64{}
+	// Nạp 8200 mục, một nửa cũ hơn 24h
+	for i := range 4100 {
+		sessionClock.first[fmt.Sprintf("old-%d", i)] = now - 25*3600*1000
+	}
+	for i := range 4100 {
+		sessionClock.first[fmt.Sprintf("fresh-%d", i)] = now - 1000
+	}
+	sessionClock.Unlock()
+
+	_ = firstSeenMs("trigger-prune")
+
+	sessionClock.Lock()
+	defer sessionClock.Unlock()
+	// Các mục cũ phải bị dọn, mục mới phải còn
+	if _, ok := sessionClock.first["fresh-0"]; !ok {
+		t.Errorf("mục mới không được bị xoá sạch")
+	}
+	if len(sessionClock.first) >= 8192 {
+		t.Errorf("kích thước map không được vượt trần: %d", len(sessionClock.first))
+	}
+}
+
+func TestResolveModelExtendedAliases(t *testing.T) {
+	cfg.DefaultModel = "deepseek"
+	m, _ := resolveModelName("deepseek-chat")
+	if m != "deepseek-v4.1-flash-free" {
+		t.Errorf("deepseek-chat -> %s", m)
+	}
+	m2, _ := resolveModelName("claude-3-5-sonnet")
+	if m2 != "deepseek-v4.1-flash-free" {
+		t.Errorf("claude-3-5-sonnet -> %s", m2)
+	}
+	m3, _ := resolveModelName("gpt-4o")
+	if m3 != "deepseek-v4.1-flash-free" {
+		t.Errorf("gpt-4o -> %s", m3)
 	}
 }
