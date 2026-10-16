@@ -520,14 +520,12 @@ func (m *Manager) route(ctx context.Context, model string, isPool bool, deadline
 			models = freeModelPool
 		}
 		// Không có Tor nào đang/sắp chạy và đường nhanh nhất còn khoá lâu hơn thời gian chờ cho phép: báo ngay, đừng treo client.
-		if !m.canWaitForTor() {
-			if sooner := m.soonest(models); sooner == 0 || sooner > time.Until(deadline) {
-				return "", nil, &gwError{
-					status:     http.StatusTooManyRequests,
-					typ:        "rate_limit_error",
-					msg:        "All egress paths are rate limited for this model. Retry later.",
-					retryAfter: sooner,
-				}
+		if !m.canWaitForTor() && !m.anyUsableWithin(models, time.Until(deadline)) {
+			return "", nil, &gwError{
+				status:     http.StatusTooManyRequests,
+				typ:        "rate_limit_error",
+				msg:        "All egress paths are rate limited for this model. Retry later.",
+				retryAfter: m.soonest(models),
 			}
 		}
 
@@ -545,6 +543,22 @@ func (m *Manager) route(ctx context.Context, model string, isPool bool, deadline
 		case <-time.After(200 * time.Millisecond):
 		}
 	}
+}
+
+// anyUsableWithin: có egress sẵn sàng nào dùng được ngay (kể cả đang bị request khác giữ chỗ thăm dò) hoặc hết cooldown
+// trong khoảng `within` không. Nếu có thì nên chờ thay vì báo 429 (tránh báo nhầm khi cooldown vừa hết giữa lúc pick và kiểm tra).
+func (m *Manager) anyUsableWithin(models []string, within time.Duration) bool {
+	for _, e := range m.snapshot() {
+		if !e.ready.Load() {
+			continue
+		}
+		for _, mod := range models {
+			if d := e.cooldownLeft(mod); d <= within {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // soonest: thời gian ngắn nhất cho tới khi có 1 egress dùng lại được cho 1 trong các model.

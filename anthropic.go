@@ -406,6 +406,10 @@ func messagesHandler(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if ms, _ := req["messages"].([]any); len(ms) == 0 {
+		writeJSONError(w, http.StatusBadRequest, "invalid_request_error", "messages: at least one message is required")
+		return
+	}
 	release, ok := acquireSlot(w, r)
 	if !ok {
 		return

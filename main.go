@@ -378,6 +378,10 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if ms, _ := reqData["messages"].([]any); len(ms) == 0 {
+		writeJSONError(w, http.StatusBadRequest, "invalid_request_error", "messages: at least one message is required")
+		return
+	}
 	release, ok := acquireSlot(w, r)
 	if !ok {
 		return
@@ -391,7 +395,7 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
 
 	up, gerr := forward(r.Context(), target, isPool, infURL+"/chat/completions", "*/*", sessionKey(r, reqData), func(m string) []byte {
 		reqData["model"] = m
-		applyFingerprint(reqData, m, true, "")
+		applyFingerprint(reqData, m, true, stubDescription)
 		b, _ := json.Marshal(reqData)
 		return b
 	})
@@ -557,7 +561,7 @@ func modelsHandler(w http.ResponseWriter, r *http.Request) {
 
 func healthHandler(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" && r.URL.Path != "/health" {
-		http.NotFound(w, r)
+		writeJSONError(w, http.StatusNotFound, "not_found_error", "Unknown endpoint: "+r.URL.Path)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -608,6 +612,8 @@ func buildMux() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/chat/completions", grd.wrap(chatHandler, true))
 	mux.HandleFunc("/v1/messages", grd.wrap(messagesHandler, true))
+	mux.HandleFunc("/v1/responses", grd.wrap(responsesHandler, true))
+	mux.HandleFunc("/v1/completions", grd.wrap(completionsHandler, true))
 	mux.HandleFunc("/v1/systemone", grd.wrap(systemoneHandler, true))
 	mux.HandleFunc("/v1/messages/count_tokens", grd.wrap(countTokensHandler, false))
 	mux.HandleFunc("/v1/models", grd.wrap(modelsHandler, false))

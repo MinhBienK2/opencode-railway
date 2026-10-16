@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
@@ -163,8 +164,10 @@ func TestScenarioBurstWithTransient429(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if resp, _ := post(t, url+"/v1/chat/completions", chatReq); resp.StatusCode != 200 {
-				fails.Add(1)
+			if resp, b := post(t, url+"/v1/chat/completions", chatReq); resp.StatusCode != 200 {
+				if fails.Add(1) == 1 {
+					t.Logf("lỗi mẫu: %d %s", resp.StatusCode, b)
+				}
 			}
 		}()
 	}
@@ -243,5 +246,83 @@ func TestScenarioMidStreamCut(t *testing.T) {
 	}
 	if strings.Contains(body, "message_stop") && !strings.Contains(body, "event: error") {
 		t.Logf("lưu ý: kết thúc bằng message_stop không có event error")
+	}
+}
+
+// ---------- OpenAI Responses / Completions ----------
+
+func TestResponsesNonStreamAndTools(t *testing.T) {
+	var got map[string]any
+	gw, _ := setup(t, func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&got)
+		toolStream(w, r)
+	}, false)
+	body := `{"model":"deepseek","instructions":"be brief","input":[
+	  {"role":"user","content":[{"type":"input_text","text":"read /a"}]},
+	  {"type":"function_call","call_id":"c0","name":"shell","arguments":"{}"},
+	  {"type":"function_call_output","call_id":"c0","output":"done"}],
+	 "tools":[{"type":"function","name":"read","description":"r","parameters":{"type":"object","properties":{"filePath":{"type":"string"}}}},{"type":"web_search"}],
+	 "max_output_tokens":50}`
+	resp, out := post(t, gw.URL+"/v1/responses", body)
+	if resp.StatusCode != 200 {
+		t.Fatalf("%d %s", resp.StatusCode, out)
+	}
+	var r map[string]any
+	json.Unmarshal([]byte(out), &r)
+	if r["object"] != "response" || r["status"] != "completed" {
+		t.Errorf("bad response: %s", out)
+	}
+	if !strings.Contains(out, `"type":"function_call"`) || !strings.Contains(out, `"name":"read"`) || !strings.Contains(out, "input_tokens") {
+		t.Errorf("thiếu function_call/usage: %s", out)
+	}
+	msgs := got["messages"].([]any)
+	if len(msgs) != 4 || msgs[0].(map[string]any)["role"] != "system" || msgs[2].(map[string]any)["tool_calls"] == nil || msgs[3].(map[string]any)["role"] != "tool" {
+		t.Errorf("dịch input sai: %v", msgs)
+	}
+	if got["max_tokens"] == nil {
+		t.Errorf("max_output_tokens chưa được đổi thành max_tokens")
+	}
+}
+
+func TestResponsesStreamEvents(t *testing.T) {
+	gw, _ := setup(t, func(w http.ResponseWriter, r *http.Request) {
+		sse(w,
+			`{"choices":[{"delta":{"content":"Hel"}}]}`,
+			`{"choices":[{"delta":{"content":"lo"}}]}`,
+			`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"read","arguments":"{\"a\""}}]}}]}`,
+			`{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":":1}"}}]}}]}`,
+			`{"choices":[{"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":10,"completion_tokens":7}}`)
+	}, false)
+	_, out := post(t, gw.URL+"/v1/responses", `{"model":"deepseek","input":"hi","stream":true}`)
+	order := []string{"response.created", "response.output_item.added", "response.output_text.delta", "response.output_text.done",
+		"response.output_item.done", "response.function_call_arguments.delta", "response.function_call_arguments.done", "response.completed"}
+	pos := 0
+	for _, ev := range order {
+		i := strings.Index(out[pos:], "event: "+ev)
+		if i < 0 {
+			t.Fatalf("thiếu/sai thứ tự %s trong:\n%s", ev, out)
+		}
+		pos += i
+	}
+	if !strings.Contains(out, `"delta":"Hel"`) || !strings.Contains(out, `"arguments":"{\"a\":1}"`) {
+		t.Errorf("nội dung delta/arguments sai:\n%s", out)
+	}
+}
+
+func TestCompletionsAndValidation(t *testing.T) {
+	gw, _ := setup(t, func(w http.ResponseWriter, r *http.Request) {
+		sse(w, `{"choices":[{"delta":{"content":"hi there"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2}}`)
+	}, false)
+	if resp, out := post(t, gw.URL+"/v1/completions", `{"model":"deepseek","prompt":"say hi"}`); resp.StatusCode != 200 || !strings.Contains(out, `"text":"hi there"`) {
+		t.Errorf("completions: %d %s", resp.StatusCode, out)
+	}
+	for _, p := range []string{"/v1/messages", "/v1/chat/completions"} {
+		if resp, _ := post(t, gw.URL+p, `{"model":"deepseek","max_tokens":5}`); resp.StatusCode != 400 {
+			t.Errorf("%s thiếu messages phải 400, got %d", p, resp.StatusCode)
+		}
+	}
+	resp, out := post(t, gw.URL+"/v1/nope", `{}`)
+	if resp.StatusCode != 404 || !strings.Contains(out, "not_found_error") {
+		t.Errorf("404 phải ở dạng JSON: %d %s", resp.StatusCode, out)
 	}
 }

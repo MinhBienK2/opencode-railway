@@ -259,7 +259,7 @@ func TestTorRotatesOn429(t *testing.T) {
 		}
 		sse(w, `{"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}`)
 	}, true)
-	resp, _ := post(t, gw.URL+"/v1/chat/completions", `{"model":"deepseek","messages":[]}`)
+	resp, _ := post(t, gw.URL+"/v1/chat/completions", `{"model":"deepseek","messages":[{"role":"user","content":"x"}]}`)
 	if resp.StatusCode != 200 {
 		t.Fatalf("phải thành công sau khi xoay Tor, got %d", resp.StatusCode)
 	}
@@ -682,13 +682,13 @@ func TestQueueWaitReturns503(t *testing.T) {
 	concurrencySem = make(chan struct{}, 1)
 	cfg.QueueWait = 300 * time.Millisecond
 	go func() { // giữ slot duy nhất; không dùng post() vì nó gọi t.Fatal ngoài goroutine test
-		if r, err := http.Post(gw.URL+"/v1/chat/completions", "application/json", strings.NewReader(`{"model":"deepseek","stream":true,"messages":[]}`)); err == nil {
+		if r, err := http.Post(gw.URL+"/v1/chat/completions", "application/json", strings.NewReader(`{"model":"deepseek","stream":true,"messages":[{"role":"user","content":"x"}]}`)); err == nil {
 			io.Copy(io.Discard, r.Body) // giữ slot cho tới khi upstream kết thúc
 			r.Body.Close()
 		}
 	}()
 	time.Sleep(300 * time.Millisecond)
-	resp, body := post(t, gw.URL+"/v1/chat/completions", `{"model":"deepseek","messages":[]}`)
+	resp, body := post(t, gw.URL+"/v1/chat/completions", `{"model":"deepseek","messages":[{"role":"user","content":"x"}]}`)
 	if resp.StatusCode != 503 || resp.Header.Get("Retry-After") == "" {
 		t.Errorf("hết slot phải 503 kèm Retry-After, got %d %s", resp.StatusCode, body)
 	}
