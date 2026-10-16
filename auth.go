@@ -46,12 +46,15 @@ func parseAllowlist(raw string) (*ipAllowlist, error) {
 
 func (al *ipAllowlist) empty() bool { return !al.all && len(al.prefixes) == 0 }
 
+// cgnat 100.64.0.0/10: dải của Tailscale/CGNAT, coi như mạng riêng.
+var cgnat = netip.MustParsePrefix("100.64.0.0/10")
+
 func (al *ipAllowlist) allows(ip netip.Addr) bool {
 	if al.all {
 		return true
 	}
 	if al.empty() {
-		return ip.IsLoopback() || ip.IsPrivate()
+		return ip.IsLoopback() || ip.IsPrivate() || cgnat.Contains(ip.Unmap())
 	}
 	for _, p := range al.prefixes {
 		if p.Contains(ip) {
