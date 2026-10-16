@@ -225,6 +225,10 @@ func forward(ctx context.Context, model string, isPool bool, url, accept, key st
 	var last *gwError
 
 	for attempt := 0; attempt < cfg.MaxAttempts; attempt++ {
+		// Tổng thời gian tối đa cho 1 request (MaxWait): đã có lỗi và hết ngân sách thì trả lỗi cuối, không thử mãi.
+		if last != nil && time.Now().After(deadline) {
+			return nil, last
+		}
 		m, e, gerr := mgr.route(ctx, model, isPool, deadline)
 		if gerr != nil {
 			return nil, gerr

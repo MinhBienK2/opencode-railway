@@ -148,3 +148,22 @@ Direct nhanh hơn khoảng 1,5–2 lần nên mặc định là direct trước,
 - Sau 429, IP direct hồi phục trong khoảng **1–2 phút** (dù `Retry-After` báo ~22 giờ), nên gateway bỏ qua Retry-After dài và thăm dò lại sau 15s/30s/1m bằng đúng 1 request.
 - Khi vượt trần, gateway chuyển sang Tor (dựng 2 Tor song song ngay khi direct 429, hoặc bật sẵn từ `DIRECT_WARN_REQS`). Một đợt 700 request/150 đồng thời vượt trần: 700/700 thành công, không lỗi phía client, nhưng đuôi trễ p95 ≈ 33 s do chờ Tor bootstrap.
 - Dồn liên tục hơn ~2.000 request trong vài phút làm cạn cả direct lẫn nhiều exit Tor: một phần request nhận 429 kèm `Retry-After` (không treo). Muốn tải bền vững cao hơn cần thêm IP thoát (proxy tĩnh `PROXY_POOL`) hoặc dùng nhiều model.
+
+## Kịch bản lỗi đã kiểm thử
+
+Mỗi kịch bản có test tự động (`scenario_test.go`, upstream giả) và những kịch bản đánh dấu (live) đã chạy thật:
+
+| Kịch bản | Hành vi |
+|---|---|
+| 1 identity bị 429 | Đổi circuit tức thì, thử lại trên identity khác; client không thấy lỗi |
+| Mọi identity 429 | Chờ/thử trong `MAX_WAIT` (tổng ngân sách mỗi request), rồi trả `429` + `Retry-After`; không bao giờ treo, không vượt `MAX_ATTEMPTS` |
+| 429 hàng loạt cùng lúc | Tính 1 lần (không bùng nổ backoff); 120 request đồng thời cùng gặp 429 vẫn thành công hết |
+| 502/503/504, lỗi mạng | Identity nghỉ ngắn, thử identity khác |
+| Circuit Tor kẹt (không có header) | Sau `TTFB_RETRY` bỏ circuit đó, thử identity khác |
+| Cloudflare chặn exit (403 HTML) | Đổi exit, thử lại |
+| Identity sau cooldown | Được dùng lại (không bị loại vĩnh viễn) |
+| Daemon Tor bị kill giữa tải (live: kill 2 daemon khi 40 đồng thời, 400 request) | 400/400 thành công; daemon tự khởi động lại, autoscale bù |
+| Client bỏ giữa chừng | Huỷ request upstream, trả slot/inflight |
+| Upstream cắt stream giữa chừng | Client nhận `event: error` rõ ràng |
+| Stream im lặng | Watchdog `STREAM_IDLE_TIMEOUT` |
+| Quá `MAX_CONCURRENCY` | Xếp hàng tối đa `QUEUE_WAIT` rồi `503` |
