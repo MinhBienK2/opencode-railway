@@ -60,7 +60,7 @@ Không có API key; quyền truy cập dựa trên **IP client**:
 railway up      # hoặc nối repo GitHub, Railway tự build Dockerfile
 ```
 
-Biến nên đặt: `ALLOWED_IPS=<IP máy bạn>`, `TOR_MAX=2` (mỗi Tor chiếm khoảng 50–100 MB RAM; gói 512 MB nên giữ `TOR_MAX` nhỏ). Railway dùng `PORT` tự động. Healthcheck path: `/health`.
+Biến nên đặt: `ALLOWED_IPS=<IP máy bạn>`, `TOR_WARM=1 TOR_MAX=2 TOR_IDENTITIES=4` (mỗi daemon Tor chiếm khoảng 100 MB RAM; gói 512 MB nên giữ nhỏ). Railway dùng `PORT` tự động. Healthcheck path: `/health`.
 
 ## 4. Biến môi trường
 
