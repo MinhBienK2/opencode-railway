@@ -820,3 +820,23 @@ func TestResolveModelExtendedAliases(t *testing.T) {
 		t.Errorf("gpt-4o -> %s", m3)
 	}
 }
+
+func TestPickAvoidDaemon(t *testing.T) {
+	m := newManager(context.Background())
+	g1 := newTorGroup("tor-1", "127.0.0.1:1", 2)
+	g2 := newTorGroup("tor-2", "127.0.0.1:2", 2)
+	for _, e := range append(g1, g2...) {
+		e.ready.Store(true)
+		m.add(e)
+	}
+	// Khi tránh tor-1, phải chọn ra tor-2
+	e := m.pickAvoid("deepseek-v4.1-flash-free", "tor-1")
+	if e == nil || e.daemon != "tor-2" {
+		t.Fatalf("phải chọn tor-2 khi tránh tor-1, got %v", e)
+	}
+	// Khi tránh tor-2, phải chọn ra tor-1
+	e2 := m.pickAvoid("deepseek-v4.1-flash-free", "tor-2")
+	if e2 == nil || e2.daemon != "tor-1" {
+		t.Fatalf("phải chọn tor-1 khi tránh tor-2, got %v", e2)
+	}
+}

@@ -87,9 +87,25 @@ func (m *Manager) startTor(idx int) error {
 	// MaxCircuitDirtiness dài: exit còn quota thì giữ lâu, chỉ đổi khi bị 429.
 	torrc := fmt.Sprintf("SocksPort 127.0.0.1:%d IsolateSOCKSAuth\nDataDirectory %s\nLog notice stdout\nAvoidDiskWrites 1\nMaxCircuitDirtiness 7200\n",
 		socks, filepath.Join(dir, "data"))
-	// Cứ mỗi daemon thứ 3 để exit toàn cầu: nếu các exit trong nhóm quốc gia bị cạn hạn mức thì vẫn còn nguồn IP rộng làm dự phòng.
-	if cfg.TorExitNodes != "" && idx%3 != 0 {
-		torrc += fmt.Sprintf("ExitNodes %s\nStrictNodes 1\n", cfg.TorExitNodes)
+	// Phân tầng quốc gia 3 cấp theo chu kỳ daemon:
+	// - idx % 3 == 1: Châu Á (ping thấp, ~1.5s): {sg},{jp},{hk},{kr}
+	// - idx % 3 == 2: Tây Âu (bể IP gigabit khổng lồ, rất ít khi 429): {de},{nl},{fr},{gb},{ch}
+	// - idx % 3 == 0: Toàn cầu (không giới hạn, nguồn IP dự phòng)
+	switch idx % 3 {
+	case 1:
+		nodes := cfg.TorExitNodes
+		if nodes == "" {
+			nodes = "{sg},{jp},{hk},{kr}"
+		}
+		torrc += fmt.Sprintf("ExitNodes %s\n", nodes)
+	case 2:
+		eu := cfg.TorExitNodesEU
+		if eu == "" {
+			eu = "{de},{nl},{fr},{gb},{ch}"
+		}
+		torrc += fmt.Sprintf("ExitNodes %s\n", eu)
+	case 0:
+		// Toàn cầu: không đặt ExitNodes
 	}
 	if err := os.WriteFile(conf, []byte(torrc), 0o600); err != nil {
 		return err
@@ -189,18 +205,8 @@ func (m *Manager) superviseTor(ctx context.Context, e *Egress, conf string) {
 // warmTor bật sẵn TOR_WARM instance để khi direct bị 429 là chuyển được ngay.
 func (m *Manager) warmTor() {
 	for i := 0; i < cfg.TorWarm; i++ {
-		// startTor tuần tự: mỗi lần chờ instance trước bootstrap xong để không tranh băng thông khởi động.
-		m.growTor()
-		deadline := time.Now().Add(90 * time.Second)
-		for time.Now().Before(deadline) && m.ctx.Err() == nil {
-			m.mu.RLock()
-			starting := m.torStarting
-			m.mu.RUnlock()
-			if starting == 0 {
-				break
-			}
-			time.Sleep(500 * time.Millisecond)
-		}
+		m.growTorN(cfg.TorWarm)
+		time.Sleep(300 * time.Millisecond)
 	}
 }
 

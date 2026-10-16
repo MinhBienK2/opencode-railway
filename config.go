@@ -31,7 +31,8 @@ type Config struct {
 	TorRotateCooldown  time.Duration   // nghỉ ngắn của 1 Tor instance sau khi bị 429 (đã đổi circuit)
 	DisableTor         bool
 	ForceTor           bool          // không dùng direct (để đo/so sánh)
-	TorExitNodes       string        // vd "{de},{nl}": giới hạn quốc gia exit (tăng tốc/ổn định, đổi lại ít exit hơn)
+	TorExitNodes       string        // vd "{sg},{jp}": giới hạn quốc gia exit châu Á
+	TorExitNodesEU     string        // vd "{de},{nl}": giới hạn quốc gia exit Tây Âu
 	TorIdentities      int           // số identity (circuit/exit IP riêng) trên mỗi daemon Tor
 	PreferDirect       bool          // true: direct trước, Tor khi 429; false (mặc định): Tor trước, direct dự phòng
 	TorWarm            int           // số Tor chạy sẵn lúc khởi động (dự phòng nóng)
@@ -102,7 +103,7 @@ func envDur(key string, def time.Duration) time.Duration {
 }
 
 func loadConfig() Config {
-	torMax := envInt("TOR_MAX", envInt("TOR_COUNT", 6, 0), 0)
+	torMax := envInt("TOR_MAX", envInt("TOR_COUNT", 10, 0), 0)
 	c := Config{
 		Port:                 envStr("PORT", defaultPort),
 		MaxConcurrency:       envInt("MAX_CONCURRENCY", 1000, 1),
@@ -117,14 +118,14 @@ func loadConfig() Config {
 		TorRotateCooldown:    envDur("TOR_ROTATE_COOLDOWN", time.Second),
 		TorBackoffMax:        envDur("TOR_BACKOFF_MAX", 2*time.Minute),
 		TorIdleStop:          envDur("TOR_IDLE_STOP", 30*time.Minute),
-		TorMaxInflight:       envInt("TOR_MAX_INFLIGHT", 16, 1),
+		TorMaxInflight:       envInt("TOR_MAX_INFLIGHT", 24, 1),
 		DirectWarnReqs:       envInt("DIRECT_WARN_REQS", 150, 1),
 		DirectWarnInflight:   envInt("DIRECT_WARN_INFLIGHT", 60, 1),
 		QueueWait:            envDur("QUEUE_WAIT", 30*time.Second),
 		DisableTor:           envBool("DISABLE_TOR"),
 		ForceTor:             envBool("FORCE_TOR"),
 		TorMax:               torMax,
-		TorLoad:              envInt("TOR_LOAD", 24, 1),
+		TorLoad:              envInt("TOR_LOAD", 25, 1),
 		TtfbRetry:            envDur("TTFB_RETRY", 15*time.Second),
 		TorBin:               envStr("TOR_BIN", "tor"),
 		AllowedIPs:           strings.TrimSpace(os.Getenv("ALLOWED_IPS")),
@@ -138,10 +139,11 @@ func loadConfig() Config {
 	for _, m := range splitList(os.Getenv("IMAGE_MODELS")) {
 		c.ImageModels[strings.ToLower(m)] = true
 	}
-	c.TorExitNodes = os.Getenv("TOR_EXIT_NODES")
-	c.TorIdentities = envInt("TOR_IDENTITIES", 8, 1)
+	c.TorExitNodes = envStr("TOR_EXIT_NODES", "{sg},{jp},{hk},{kr}")
+	c.TorExitNodesEU = envStr("TOR_EXIT_NODES_EU", "{de},{nl},{fr},{gb},{ch}")
+	c.TorIdentities = envInt("TOR_IDENTITIES", 16, 1)
 	c.PreferDirect = envBool("PREFER_DIRECT")
-	c.TorWarm = envInt("TOR_WARM", 2, 0)
+	c.TorWarm = envInt("TOR_WARM", 6, 0)
 	if c.TorWarm > c.TorMax {
 		c.TorWarm = c.TorMax
 	}

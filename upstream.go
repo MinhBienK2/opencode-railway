@@ -238,13 +238,14 @@ func parseRetryAfter(h http.Header) time.Duration {
 func forward(ctx context.Context, model string, isPool bool, url, accept, key string, prep func(model string) []byte) (*upstream, *gwError) {
 	deadline := time.Now().Add(cfg.MaxWait)
 	var last *gwError
+	var avoidDaemon string
 
 	for attempt := 0; attempt < cfg.MaxAttempts; attempt++ {
 		// Tổng thời gian tối đa cho 1 request (MaxWait): đã có lỗi và hết ngân sách thì trả lỗi cuối, không thử mãi.
 		if last != nil && time.Now().After(deadline) {
 			return nil, last
 		}
-		m, e, gerr := mgr.route(ctx, model, isPool, deadline)
+		m, e, gerr := mgr.routeAvoid(ctx, model, isPool, deadline, avoidDaemon)
 		if gerr != nil {
 			return nil, gerr
 		}
@@ -266,10 +267,15 @@ func forward(ctx context.Context, model string, isPool bool, url, accept, key st
 		gen := e.gen.Load()
 		start := time.Now()
 		// Circuit Tor kẹt (chưa có header sau TTFB_RETRY): bỏ, đổi exit và thử đường khác thay vì để client chờ.
+		// Trên các lần thử lại (attempt > 0), siết timeout ttfb xuống tối đa 6s để không treo client nếu trúng circuit nghẽn.
+		ttfbLimit := cfg.TtfbRetry
+		if attempt > 0 && ttfbLimit > 6*time.Second {
+			ttfbLimit = 6 * time.Second
+		}
 		var slow atomic.Bool
 		var slowTimer *time.Timer
-		if e.canRotate && cfg.TtfbRetry > 0 {
-			slowTimer = time.AfterFunc(cfg.TtfbRetry, func() { slow.Store(true); cancel() })
+		if e.canRotate && ttfbLimit > 0 {
+			slowTimer = time.AfterFunc(ttfbLimit, func() { slow.Store(true); cancel() })
 		}
 		resp, err := e.Client().Do(req)
 		if slowTimer != nil {
@@ -284,8 +290,9 @@ func forward(ctx context.Context, model string, isPool bool, url, accept, key st
 			e.errs.Add(1)
 			e.transient(m, 3*time.Second)
 			e.rotate(gen)
+			avoidDaemon = e.daemon
 			if slow.Load() {
-				err = fmt.Errorf("không có phản hồi sau %v (circuit chậm)", cfg.TtfbRetry)
+				err = fmt.Errorf("không có phản hồi sau %v (circuit chậm)", ttfbLimit)
 			}
 			log.Printf("[%s] attempt=%d model=%s transport error: %v", e.Name, attempt, m, err)
 			last = &gwError{status: http.StatusBadGateway, typ: "upstream_error", msg: "Upstream transport error"}
@@ -306,6 +313,7 @@ func forward(ctx context.Context, model string, isPool bool, url, accept, key st
 				mgr.prewarmTor("direct vừa bị 429", 2)
 			}
 			e.rotate(gen)
+			avoidDaemon = e.daemon
 			log.Printf("[%s] attempt=%d model=%s 429 retry-after=%v cooldown=%v ttfb=%v body=%q",
 				e.Name, attempt, m, ra, d.Round(time.Second), ttfb.Round(time.Millisecond), string(snippet))
 			last = &gwError{status: http.StatusTooManyRequests, typ: "rate_limit_error",
@@ -320,6 +328,7 @@ func forward(ctx context.Context, model string, isPool bool, url, accept, key st
 			e.errs.Add(1)
 			e.transient(m, 5*time.Second)
 			e.rotate(gen)
+			avoidDaemon = e.daemon
 			log.Printf("[%s] attempt=%d model=%s HTTP %d, thử đường khác", e.Name, attempt, m, resp.StatusCode)
 			last = &gwError{status: http.StatusBadGateway, typ: "upstream_error", msg: fmt.Sprintf("Upstream HTTP %d", resp.StatusCode)}
 			continue
@@ -333,6 +342,7 @@ func forward(ctx context.Context, model string, isPool bool, url, accept, key st
 			e.errs.Add(1)
 			e.transient(m, 30*time.Second)
 			e.rotate(gen)
+			avoidDaemon = e.daemon
 			log.Printf("[%s] attempt=%d model=%s 403 non-JSON (exit bị chặn), đổi exit", e.Name, attempt, m)
 			last = &gwError{status: http.StatusBadGateway, typ: "upstream_error", msg: "Egress blocked"}
 			continue
