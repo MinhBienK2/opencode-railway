@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -74,7 +76,8 @@ func (m *Manager) startTor(idx int) error {
 	if err != nil {
 		return err
 	}
-	e := newTorEgress(fmt.Sprintf("tor-%d", idx), fmt.Sprintf("127.0.0.1:%d", socks))
+	group := newTorGroup(fmt.Sprintf("tor-%d", idx), fmt.Sprintf("127.0.0.1:%d", socks), cfg.TorIdentities)
+	e := group[0]
 
 	dir := filepath.Join(os.TempDir(), fmt.Sprintf("tor-gw-%d", idx))
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -84,10 +87,17 @@ func (m *Manager) startTor(idx int) error {
 	// MaxCircuitDirtiness dài: exit còn quota thì giữ lâu, chỉ đổi khi bị 429.
 	torrc := fmt.Sprintf("SocksPort 127.0.0.1:%d IsolateSOCKSAuth\nDataDirectory %s\nLog notice stdout\nAvoidDiskWrites 1\nMaxCircuitDirtiness 7200\n",
 		socks, filepath.Join(dir, "data"))
+	// Cứ mỗi daemon thứ 3 để exit toàn cầu: nếu các exit trong nhóm quốc gia bị cạn hạn mức thì vẫn còn nguồn IP rộng làm dự phòng.
+	if cfg.TorExitNodes != "" && idx%3 != 0 {
+		torrc += fmt.Sprintf("ExitNodes %s\nStrictNodes 1\n", cfg.TorExitNodes)
+	}
 	if err := os.WriteFile(conf, []byte(torrc), 0o600); err != nil {
 		return err
 	}
-	m.add(e)
+	for _, x := range group {
+		x.lastUsed.Store(time.Now().UnixNano())
+		m.add(x)
+	}
 	ictx, cancel := context.WithCancel(m.ctx)
 	e.stop = cancel
 	e.lastUsed.Store(time.Now().UnixNano())
@@ -126,7 +136,8 @@ func (m *Manager) superviseTor(ctx context.Context, e *Egress, conf string) {
 				line := sc.Text()
 				switch {
 				case strings.Contains(line, "Bootstrapped 100%"):
-					e.ready.Store(true)
+					e.setGroupReady(true)
+					go warmIdentities(ctx, e.members)
 					log.Printf("[%s] Tor bootstrapped, sẵn sàng (%.0fs)", e.Name, time.Since(started).Seconds())
 					if first {
 						m.mu.Lock()
@@ -140,7 +151,7 @@ func (m *Manager) superviseTor(ctx context.Context, e *Egress, conf string) {
 			}
 			_ = cmd.Wait()
 		}
-		e.ready.Store(false)
+		e.setGroupReady(false)
 		if ctx.Err() != nil {
 			return
 		}
@@ -173,6 +184,58 @@ func (m *Manager) warmTor() {
 				break
 			}
 			time.Sleep(500 * time.Millisecond)
+		}
+	}
+}
+
+// warmIdentities dựng sẵn circuit + kết nối TLS/HTTP2 cho từng identity (dãn cách nhẹ để không dồn Tor), để request đầu
+// tiên của client không phải chờ 1–15 giây dựng circuit. Chỉ HEAD trang chủ, không đụng API nên không tốn hạn mức.
+func warmIdentities(ctx context.Context, ids []*Egress) {
+	var wg sync.WaitGroup
+	for i, e := range ids {
+		wg.Add(1)
+		go func(e *Egress, delay time.Duration) {
+			defer wg.Done()
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(delay):
+			}
+			c, cancel := context.WithTimeout(ctx, 30*time.Second)
+			defer cancel()
+			if req, err := http.NewRequestWithContext(c, http.MethodHead, "https://opencode.ai/", nil); err == nil {
+				if resp, err := e.Client().Do(req); err == nil {
+					resp.Body.Close()
+				}
+			}
+		}(e, time.Duration(i)*150*time.Millisecond)
+	}
+	wg.Wait()
+}
+
+// autoscaleTor bật thêm daemon Tor khi tải đồng thời trên mỗi daemon vượt TOR_LOAD (Tor đơn luồng: 1 daemon chịu ~25–30
+// request đồng thời thì ttfb bắt đầu tăng rõ). Tắt bớt do reapIdleTor khi nhàn rỗi.
+func (m *Manager) autoscaleTor() {
+	t := time.NewTicker(time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-m.ctx.Done():
+			return
+		case <-t.C:
+		}
+		ready, inflight := 0, 0
+		for _, e := range m.snapshot() {
+			if e.Kind != kindTor {
+				continue
+			}
+			inflight += int(e.inflight.Load())
+			if len(e.members) > 0 && e.ready.Load() {
+				ready++
+			}
+		}
+		if inflight > 0 && inflight > ready*cfg.TorLoad {
+			m.growTorN(2)
 		}
 	}
 }

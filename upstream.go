@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -224,7 +225,7 @@ func forward(ctx context.Context, model string, isPool bool, url, accept, key st
 	var last *gwError
 
 	for attempt := 0; attempt < cfg.MaxAttempts; attempt++ {
-		m, e, gerr := mgr.route(ctx, model, isPool, deadline, mgr.stickyGet(key))
+		m, e, gerr := mgr.route(ctx, model, isPool, deadline)
 		if gerr != nil {
 			return nil, gerr
 		}
@@ -245,7 +246,16 @@ func forward(ctx context.Context, model string, isPool bool, url, accept, key st
 		}
 		gen := e.gen.Load()
 		start := time.Now()
+		// Circuit Tor kẹt (chưa có header sau TTFB_RETRY): bỏ, đổi exit và thử đường khác thay vì để client chờ.
+		var slow atomic.Bool
+		var slowTimer *time.Timer
+		if e.canRotate && cfg.TtfbRetry > 0 {
+			slowTimer = time.AfterFunc(cfg.TtfbRetry, func() { slow.Store(true); cancel() })
+		}
 		resp, err := e.Client().Do(req)
+		if slowTimer != nil {
+			slowTimer.Stop()
+		}
 		if err != nil {
 			cancel()
 			e.inflight.Add(-1)
@@ -255,6 +265,9 @@ func forward(ctx context.Context, model string, isPool bool, url, accept, key st
 			e.errs.Add(1)
 			e.transient(m, 3*time.Second)
 			e.rotate(gen)
+			if slow.Load() {
+				err = fmt.Errorf("không có phản hồi sau %v (circuit chậm)", cfg.TtfbRetry)
+			}
 			log.Printf("[%s] attempt=%d model=%s transport error: %v", e.Name, attempt, m, err)
 			last = &gwError{status: http.StatusBadGateway, typ: "upstream_error", msg: "Upstream transport error"}
 			continue
@@ -309,7 +322,8 @@ func forward(ctx context.Context, model string, isPool bool, url, accept, key st
 		if resp.StatusCode == http.StatusOK {
 			e.oks.Add(1)
 			e.clear(m)
-			mgr.stickySet(key, e)
+			e.observeLatency(gen, ttfb)
+			mgr.retireIfSlow(e, gen)
 		}
 		resp.Body = &idleBody{rc: resp.Body, d: cfg.StreamIdle, t: time.AfterFunc(cfg.StreamIdle, cancel)}
 		return &upstream{resp: resp, egress: e, model: m, ttfb: ttfb, cancel: cancel}, nil

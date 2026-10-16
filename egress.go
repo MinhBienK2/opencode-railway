@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -40,7 +41,12 @@ type Egress struct {
 
 	inflight atomic.Int32
 	lastUsed atomic.Int64       // unix nano của lần dùng gần nhất (để tắt Tor nhàn rỗi)
-	stop     context.CancelFunc // dừng Tor do gateway tự chạy
+	stop     context.CancelFunc // dừng Tor do gateway tự chạy (chỉ ở leader)
+	latMu    sync.Mutex
+	latEwma  time.Duration // trung bình trượt ttfb của circuit hiện tại
+	latN     int
+	latGen   uint64
+	members  []*Egress // leader của 1 daemon Tor: toàn bộ identity (gồm cả chính nó)
 	reqs     atomic.Int64
 	oks      atomic.Int64
 	r429     atomic.Int64
@@ -85,6 +91,113 @@ func newTorEgress(name, socksAddr string) *Egress {
 	e = newEgress(name, kindTor, proxy)
 	e.canRotate = true
 	return e
+}
+
+// newTorGroup tạo k "identity" trên cùng 1 daemon Tor. Mỗi identity có username SOCKS riêng nên có circuit/exit IP riêng,
+// tức hạn mức upstream riêng (quota tính theo IP): dung lượng tăng theo số identity chứ không chỉ theo số daemon.
+func newTorGroup(name, socksAddr string, k int) []*Egress {
+	if k < 1 {
+		k = 1
+	}
+	g := make([]*Egress, k)
+	for i := range g {
+		g[i] = newTorEgress(fmt.Sprintf("%s.%d", name, i+1), socksAddr)
+	}
+	g[0].members = g
+	return g
+}
+
+// setGroupReady đặt trạng thái sẵn sàng cho toàn bộ identity của daemon.
+func (e *Egress) setGroupReady(v bool) {
+	if len(e.members) == 0 {
+		e.ready.Store(v)
+		return
+	}
+	for _, x := range e.members {
+		x.ready.Store(v)
+	}
+}
+
+// groupLastUsed: lần dùng gần nhất của bất kỳ identity nào trong daemon.
+func (e *Egress) groupLastUsed() int64 {
+	last := e.lastUsed.Load()
+	for _, x := range e.members {
+		if v := x.lastUsed.Load(); v > last {
+			last = v
+		}
+	}
+	return last
+}
+
+// groupInflight: số request đang chạy trên cả daemon.
+func (e *Egress) groupInflight() int {
+	if len(e.members) == 0 {
+		return int(e.inflight.Load())
+	}
+	n := 0
+	for _, x := range e.members {
+		n += int(x.inflight.Load())
+	}
+	return n
+}
+
+// observeLatency ghi ttfb của 1 request thành công (gen = circuit đã dùng; circuit mới thì bắt đầu lại từ đầu).
+func (e *Egress) observeLatency(gen uint64, ttfb time.Duration) {
+	e.latMu.Lock()
+	defer e.latMu.Unlock()
+	if gen != e.latGen {
+		e.latGen, e.latEwma, e.latN = gen, 0, 0
+	}
+	if e.latN == 0 {
+		e.latEwma = ttfb
+	} else {
+		e.latEwma = (e.latEwma*7 + ttfb*3) / 10
+	}
+	e.latN++
+}
+
+// latency trả về (ttfb trung bình trượt, số mẫu) của circuit hiện tại.
+func (e *Egress) latency() (time.Duration, int) {
+	e.latMu.Lock()
+	defer e.latMu.Unlock()
+	if e.latGen != e.gen.Load() {
+		return 0, 0
+	}
+	return e.latEwma, e.latN
+}
+
+// medianLatency: trung vị ttfb của các egress Tor/proxy đã đủ mẫu (0 nếu chưa đủ 3 egress để so sánh).
+func (m *Manager) medianLatency() time.Duration {
+	var l []time.Duration
+	for _, e := range m.snapshot() {
+		if e.Kind == kindDirect {
+			continue
+		}
+		if d, n := e.latency(); n >= 3 {
+			l = append(l, d)
+		}
+	}
+	if len(l) < 3 {
+		return 0
+	}
+	sort.Slice(l, func(i, j int) bool { return l[i] < l[j] })
+	return l[len(l)/2]
+}
+
+// retireIfSlow: circuit chậm hơn hẳn các circuit khác (exit tồi) thì đổi sang exit mới; dần dần chỉ còn lại exit nhanh.
+func (m *Manager) retireIfSlow(e *Egress, gen uint64) {
+	if !e.canRotate {
+		return
+	}
+	d, n := e.latency()
+	if n < 6 {
+		return
+	}
+	med := m.medianLatency()
+	if med > 0 && d > 3*time.Second && d > med*5/2 {
+		log.Printf("[%s] circuit chậm (ttfb≈%v, trung vị %v), đổi exit", e.Name, d.Round(time.Millisecond), med.Round(time.Millisecond))
+		e.rotate(gen)
+	}
 }
 
 func (e *Egress) Client() *http.Client { return e.client.Load() }
@@ -241,9 +354,6 @@ type Manager struct {
 	dirMu  sync.Mutex
 	dirWin map[string]*rateWindow
 
-	stickyMu sync.Mutex
-	sticky   map[string]*Egress // khoá hội thoại -> egress Tor đã phục vụ lần trước (giữ cache prefix)
-
 	torSpawned  int
 	torSeq      int
 	torStarting int
@@ -252,7 +362,7 @@ type Manager struct {
 }
 
 func newManager(ctx context.Context) *Manager {
-	m := &Manager{ctx: ctx, sticky: map[string]*Egress{}, dirWin: map[string]*rateWindow{}}
+	m := &Manager{ctx: ctx, dirWin: map[string]*rateWindow{}}
 	direct := newEgress("direct", kindDirect, http.ProxyFromEnvironment)
 	direct.ready.Store(!cfg.ForceTor)
 	m.egresses = []*Egress{direct}
@@ -303,9 +413,10 @@ func (m *Manager) addStatic(torInstances, proxyPool string) {
 		if len(parts) < 2 {
 			continue
 		}
-		e := newTorEgress(fmt.Sprintf("tor-ext%d", i+1), parts[0]+":"+parts[1])
-		e.ready.Store(true)
-		m.add(e)
+		for _, e := range newTorGroup(fmt.Sprintf("tor-ext%d", i+1), parts[0]+":"+parts[1], cfg.TorIdentities) {
+			e.ready.Store(true)
+			m.add(e)
+		}
 	}
 	for i, p := range splitList(proxyPool) {
 		u, err := url.Parse(p)
@@ -328,54 +439,56 @@ func splitList(s string) []string {
 	return out
 }
 
-func (m *Manager) stickyGet(key string) *Egress {
-	if key == "" {
-		return nil
-	}
-	m.stickyMu.Lock()
-	defer m.stickyMu.Unlock()
-	return m.sticky[key]
-}
-
-func (m *Manager) stickySet(key string, e *Egress) {
-	if key == "" || e == nil || e.Kind == kindDirect {
-		return
-	}
-	m.stickyMu.Lock()
-	if len(m.sticky) >= 4096 {
-		m.sticky = map[string]*Egress{}
-	}
-	m.sticky[key] = e
-	m.stickyMu.Unlock()
-}
-
-// pick chọn egress cho model: direct trước; hết thì ưu tiên egress Tor đã phục vụ hội thoại này (giữ cache) nếu nó còn khỏe,
+// pick chọn egress cho model (cache của upstream theo prefix chứ không theo IP/session nên không cần gắn hội thoại với egress): mặc định Tor/proxy trước (PREFER_DIRECT=true thì direct trước); hết thì ưu tiên egress Tor đã phục vụ hội thoại này (giữ cache) nếu nó còn khỏe,
 // sau đó Tor/proxy khỏe nhất/rảnh nhất. nil nếu chưa có cái nào dùng được.
-func (m *Manager) pick(model string, prefer *Egress) *Egress {
+func (m *Manager) pick(model string) *Egress {
 	list := m.snapshot()
-	if d := list[0]; d.available(model) && d.claim(model) {
-		return d
+	direct := list[0]
+	if cfg.PreferDirect && direct.available(model) && direct.claim(model) {
+		return direct
 	}
-	rest := list[1:]
+	if e := m.pickRest(list[1:], model); e != nil {
+		return e
+	}
+	// Tor/proxy chưa sẵn sàng hoặc đều đang nghỉ: direct làm đường dự phòng thay vì bắt client chờ.
+	if !cfg.PreferDirect && direct.available(model) && direct.claim(model) {
+		return direct
+	}
+	return nil
+}
+
+// loadScore: càng thấp càng nên chọn. Circuit chưa đủ mẫu coi như bằng trung vị (để được thử), mỗi request đang chạy
+// cộng thêm ~25% chi phí để tải dàn đều chứ không dồn vào circuit nhanh nhất.
+func (e *Egress) loadScore(median time.Duration) float64 {
+	d, n := e.latency()
+	if n < 3 {
+		d = median
+		if d == 0 {
+			d = time.Second
+		}
+	}
+	return float64(d) * (1 + 0.25*float64(e.inflight.Load()))
+}
+
+func (m *Manager) pickRest(rest []*Egress, model string) *Egress {
 	if len(rest) == 0 {
 		return nil
-	}
-	if prefer != nil && prefer.Kind != kindDirect && prefer.available(model) && prefer.strikes(model) == 0 &&
-		int(prefer.inflight.Load()) < cfg.TorMaxInflight && prefer.claim(model) {
-		return prefer
 	}
 	start := int(atomic.AddUint32(&m.rr, 1))
 	// Ưu tiên egress đang khỏe (ít strike nhất), sau đó ít inflight nhất; hòa thì xoay vòng.
 	var best *Egress
 	var bestStrikes int
+	var bestScore float64
+	med := m.medianLatency()
 	for i := range rest {
 		e := rest[(start+i)%len(rest)]
 		if !e.available(model) || (e.canRotate && int(e.inflight.Load()) >= cfg.TorMaxInflight) {
 			continue
 		}
 		st := e.strikes(model)
-		if best == nil || st < bestStrikes || (st == bestStrikes && e.inflight.Load() < best.inflight.Load()) {
-			best, bestStrikes = e, st
+		sc := e.loadScore(med)
+		if best == nil || st < bestStrikes || (st == bestStrikes && sc < bestScore) {
+			best, bestStrikes, bestScore = e, st, sc
 		}
 	}
 	if best != nil && !best.claim(model) {
@@ -385,18 +498,18 @@ func (m *Manager) pick(model string, prefer *Egress) *Egress {
 }
 
 // route chọn (model, egress). Không có egress nào dùng được thì bật thêm Tor và chờ tới deadline.
-func (m *Manager) route(ctx context.Context, model string, isPool bool, deadline time.Time, prefer *Egress) (string, *Egress, *gwError) {
+func (m *Manager) route(ctx context.Context, model string, isPool bool, deadline time.Time) (string, *Egress, *gwError) {
 	for {
 		if isPool {
 			n := len(freeModelPool)
 			start := int(atomic.AddUint32(&poolIndex, 1))
 			for i := 0; i < n; i++ {
 				cand := freeModelPool[(start+i)%n]
-				if e := m.pick(cand, prefer); e != nil {
+				if e := m.pick(cand); e != nil {
 					return cand, e, nil
 				}
 			}
-		} else if e := m.pick(model, prefer); e != nil {
+		} else if e := m.pick(model); e != nil {
 			return model, e, nil
 		}
 
@@ -536,10 +649,10 @@ func (m *Manager) reapIdleTor() {
 		case <-t.C:
 		}
 		for _, e := range m.snapshot() {
-			if e.stop == nil || e.inflight.Load() > 0 || !e.ready.Load() {
+			if e.stop == nil || e.groupInflight() > 0 || !e.ready.Load() {
 				continue
 			}
-			if idle := time.Since(time.Unix(0, e.lastUsed.Load())); idle > cfg.TorIdleStop {
+			if idle := time.Since(time.Unix(0, e.groupLastUsed())); idle > cfg.TorIdleStop {
 				log.Printf("[%s] nhàn rỗi %v, tắt để nhường RAM", e.Name, idle.Round(time.Second))
 				m.removeTor(e)
 			}
@@ -548,11 +661,15 @@ func (m *Manager) reapIdleTor() {
 }
 
 func (m *Manager) removeTor(e *Egress) {
-	e.ready.Store(false)
+	e.setGroupReady(false)
+	gone := map[*Egress]bool{e: true}
+	for _, x := range e.members {
+		gone[x] = true
+	}
 	m.mu.Lock()
 	var keep []*Egress
 	for _, x := range m.egresses {
-		if x != e {
+		if !gone[x] {
 			keep = append(keep, x)
 		}
 	}

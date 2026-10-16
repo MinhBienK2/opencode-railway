@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -42,7 +43,7 @@ func setup(t *testing.T, upstreamHandler http.HandlerFunc, withTor bool) (*httpt
 
 	cfg = Config{MaxConcurrency: 8, MaxBodyBytes: 1 << 20, MaxWait: 5 * time.Second, MaxAttempts: 10,
 		CooldownMax: 10 * time.Minute, StreamIdle: time.Minute, TorRotateCooldown: 50 * time.Millisecond, InjectToolsAnthropic: true, SessionIDMode: "client", ProjectIDMode: "client", TorBackoffMax: 2 * time.Minute, ImageModels: map[string]bool{},
-		TorMaxInflight: 24, QueueWait: 2 * time.Second, DirectWarnReqs: 200, DirectWarnInflight: 60}
+		PreferDirect: true, TorIdentities: 2, TorMaxInflight: 24, QueueWait: 2 * time.Second, DirectWarnReqs: 200, DirectWarnInflight: 60}
 	concurrencySem = make(chan struct{}, cfg.MaxConcurrency)
 	infURL, zenURL = up.URL, up.URL
 	torAvailable = false
@@ -437,14 +438,14 @@ func TestPickPrefersHealthyTor(t *testing.T) {
 	a.exhausted(model, 0, true)
 	a.cool[model].until = time.Now().Add(-time.Second) // đã hết cooldown nhưng còn strike
 	for i := 0; i < 6; i++ {
-		if got := m.pick(model, nil); got != b {
+		if got := m.pick(model); got != b {
 			t.Fatalf("phải ưu tiên tor-b (khỏe) hơn tor-a (đang có strike), got %s", got.Name)
 		}
 	}
 	a.clear(model)
 	seen := map[string]bool{}
 	for i := 0; i < 6; i++ {
-		seen[m.pick(model, nil).Name] = true
+		seen[m.pick(model).Name] = true
 	}
 	if len(seen) != 2 {
 		t.Errorf("khi cả hai đều khỏe phải xoay vòng: %v", seen)
@@ -457,16 +458,16 @@ func TestProbeGating(t *testing.T) {
 	model := "deepseek-v4.1-flash-free"
 	d.exhausted(model, time.Hour, true)
 	d.cool[model].until = time.Now().Add(-time.Second) // hết cooldown nhưng còn strike => chỉ 1 request thăm dò
-	if m.pick(model, nil) != d {
+	if m.pick(model) != d {
 		t.Fatal("request đầu phải được thăm dò direct")
 	}
 	for i := 0; i < 5; i++ {
-		if m.pick(model, nil) != nil {
+		if m.pick(model) != nil {
 			t.Fatal("khi đang thăm dò, các request khác không được dùng direct")
 		}
 	}
 	d.clear(model) // thăm dò thành công
-	if m.pick(model, nil) != d || m.pick(model, nil) != d {
+	if m.pick(model) != d || m.pick(model) != d {
 		t.Error("sau khi khỏe lại, nhiều request dùng đồng thời được")
 	}
 }
@@ -582,27 +583,6 @@ func TestSessionKeyExtraction(t *testing.T) {
 	}
 }
 
-func TestStickyEgressPreferredWhenHealthy(t *testing.T) {
-	_, m := setup(t, toolStream, false)
-	a, b := newTorEgress("tor-a", "127.0.0.1:1"), newTorEgress("tor-b", "127.0.0.1:1")
-	a.ready.Store(true)
-	b.ready.Store(true)
-	m.add(a)
-	m.add(b)
-	m.egresses[0].ready.Store(false)
-	model := "deepseek-v4.1-flash-free"
-	for i := 0; i < 6; i++ {
-		if got := m.pick(model, b); got != b {
-			t.Fatalf("phải giữ egress đã phục vụ hội thoại (tor-b), got %s", got.Name)
-		}
-	}
-	b.exhausted(model, 0, true)
-	b.cool[model].until = time.Now().Add(-time.Second)
-	if got := m.pick(model, b); got != a {
-		t.Errorf("egress sticky đã có strike thì phải chuyển sang egress khỏe, got %s", got.Name)
-	}
-}
-
 func TestSystemBillingHeaderStripped(t *testing.T) {
 	var req map[string]any
 	json.Unmarshal([]byte(`{"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=1.2; cch=abc;"},{"type":"text","text":"You are helpful"}],"messages":[{"role":"user","content":"hi"}]}`), &req)
@@ -679,12 +659,12 @@ func TestTorInflightCapSkipsBusyInstance(t *testing.T) {
 	cfg.TorMaxInflight = 3
 	a.inflight.Store(3)
 	for i := 0; i < 5; i++ {
-		if got := m.pick("deepseek-v4.1-flash-free", nil); got != b {
+		if got := m.pick("deepseek-v4.1-flash-free"); got != b {
 			t.Fatalf("tor-a đầy phải bị bỏ qua, got %v", got)
 		}
 	}
 	b.inflight.Store(3)
-	if got := m.pick("deepseek-v4.1-flash-free", nil); got != nil {
+	if got := m.pick("deepseek-v4.1-flash-free"); got != nil {
 		t.Errorf("cả hai đầy thì phải trả nil để route bật thêm Tor/chờ, got %s", got.Name)
 	}
 }
@@ -734,5 +714,38 @@ func TestConcurrent429CountsOnce(t *testing.T) {
 	}
 	if got := tor.cool["m"]; got != nil && got.strikes != 0 {
 		t.Errorf("429 từ circuit đã xoay không được cộng strike, got %d", got.strikes)
+	}
+}
+
+// Mặc định (PreferDirect=false): Tor trước, direct chỉ khi Tor chưa sẵn sàng; nhiều identity chia tải.
+func TestTorFirstSpreadsAcrossIdentities(t *testing.T) {
+	var hits sync.Map
+	gw, m := setup(t, func(w http.ResponseWriter, r *http.Request) {
+		v, _ := hits.LoadOrStore(r.Header.Get("X-Test-Egress"), new(atomic.Int32))
+		v.(*atomic.Int32).Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":"x","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}, false)
+	cfg.PreferDirect = false
+	for _, e := range newTorGroup("tor-1", "127.0.0.1:1", 3) {
+		tagged(e)
+		e.ready.Store(true)
+		m.add(e)
+	}
+	for i := 0; i < 30; i++ {
+		resp, err := http.Post(gw.URL+"/v1/chat/completions", "application/json",
+			strings.NewReader(`{"model":"deepseek","messages":[{"role":"user","content":"hi"}]}`))
+		if err != nil || resp.StatusCode != 200 {
+			t.Fatalf("req %d: %v %v", i, err, resp)
+		}
+		resp.Body.Close()
+	}
+	if v, ok := hits.Load("direct"); ok && v.(*atomic.Int32).Load() > 0 {
+		t.Errorf("direct không được dùng khi Tor sẵn sàng")
+	}
+	n := 0
+	hits.Range(func(_, _ any) bool { n++; return true })
+	if n < 2 {
+		t.Errorf("tải phải chia cho nhiều identity, chỉ có %d", n)
 	}
 }

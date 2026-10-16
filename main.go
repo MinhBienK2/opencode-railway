@@ -645,18 +645,22 @@ func main() {
 	mgr = newManager(ctx)
 	mgr.addStatic(os.Getenv("TOR_INSTANCES"), os.Getenv("PROXY_POOL"))
 	torAvailable = checkTorBinary()
-	mode := "direct trước, Tor khi bị 429"
+	mode := "Tor trước (nhiều identity/daemon), direct dự phòng"
+	if cfg.PreferDirect {
+		mode = "direct trước, Tor khi bị 429"
+	}
 	switch {
 	case cfg.ForceTor:
 		mode = "chỉ Tor (FORCE_TOR)"
 	case !torAvailable && len(mgr.snapshot()) == 1:
 		mode = "chỉ direct"
 	}
-	log.Printf("Egress: %s | TOR_WARM=%d TOR_MAX=%d (Tor chỉ bật khi direct nguy hiểm, tắt sau %v nhàn rỗi)", mode, cfg.TorWarm, cfg.TorMax, cfg.TorIdleStop)
+	log.Printf("Egress: %s | TOR_WARM=%d TOR_MAX=%d (tự thêm daemon khi tải > %d/daemon, tắt sau %v nhàn rỗi)", mode, cfg.TorWarm, cfg.TorMax, cfg.TorLoad, cfg.TorIdleStop)
 	go mgr.warmDirect()
 	if torAvailable {
 		go mgr.warmTor()
 		go mgr.reapIdleTor()
+		go mgr.autoscaleTor()
 	}
 
 	srv := &http.Server{
