@@ -40,13 +40,17 @@ func checkTorBinary() bool {
 	return true
 }
 
-// growTor bật thêm 1 Tor khi mọi đường ra đang bị giới hạn. Mỗi lần chỉ 1 instance đang khởi động.
-func (m *Manager) growTor() {
+// growTor bật thêm 1 Tor khi mọi đường ra đang bị giới hạn. Mặc định mỗi lần chỉ 1 instance đang khởi động.
+func (m *Manager) growTor() { m.growTorN(1) }
+
+// growTorN như growTor nhưng cho phép tối đa maxStarting instance cùng khởi động song song (bootstrap mất 10–45s nên
+// khởi động nối tiếp sẽ làm đuôi độ trễ rất dài khi direct vừa cạn).
+func (m *Manager) growTorN(maxStarting int) {
 	if !torAvailable {
 		return
 	}
 	m.mu.Lock()
-	if m.torStarting > 0 || m.torSpawned >= cfg.TorMax {
+	if m.torStarting >= maxStarting || m.torSpawned >= cfg.TorMax {
 		m.mu.Unlock()
 		return
 	}

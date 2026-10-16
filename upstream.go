@@ -269,9 +269,9 @@ func forward(ctx context.Context, model string, isPool bool, url, accept, key st
 			cancel()
 			e.inflight.Add(-1)
 			e.r429.Add(1)
-			d := e.exhausted(m, ra)
+			d := e.exhausted(m, ra, e.gen.Load() == gen)
 			if e.Kind == kindDirect {
-				mgr.prewarmTor("direct vừa bị 429")
+				mgr.prewarmTor("direct vừa bị 429", 2)
 			}
 			e.rotate(gen)
 			log.Printf("[%s] attempt=%d model=%s 429 retry-after=%v cooldown=%v ttfb=%v body=%q",

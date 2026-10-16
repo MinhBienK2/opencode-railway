@@ -150,17 +150,25 @@ func (e *Egress) transient(model string, d time.Duration) {
 	e.mu.Unlock()
 }
 
-// exhausted: upstream trả 429 cho (egress, model). Trả về thời gian nghỉ đã áp dụng.
+// exhausted: (fresh = request này đi trên circuit hiện tại, chưa bị request khác xoay) upstream trả 429 cho (egress, model). Trả về thời gian nghỉ đã áp dụng.
 //   - Tor có control port: IP sẽ được đổi nên chỉ nghỉ ngắn rồi thử lại với exit mới.
-//   - Còn lại (direct, proxy tĩnh): theo Retry-After (tối đa CooldownMax) nếu có, không thì backoff mũ 30s, 1m, 2m... tới CooldownMax.
+//   - Còn lại (direct, proxy tĩnh): theo Retry-After (tối đa CooldownMax) nếu có, không thì backoff mũ 15s, 30s, 1m... tới CooldownMax.
 //     Mỗi lần hết hạn chỉ có 1 request "thăm dò" lại; thành công thì clear().
-func (e *Egress) exhausted(model string, retryAfter time.Duration) time.Duration {
+func (e *Egress) exhausted(model string, retryAfter time.Duration, fresh bool) time.Duration {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	c := e.cool[model]
 	if c == nil {
 		c = &coolState{}
 		e.cool[model] = c
+	}
+	// Nhiều request đồng thời cùng nhận 429 của 1 sự kiện chỉ tính là 1 lần: nếu đang cooldown (direct) hoặc exit đã được
+	// đổi bởi request khác (Tor, fresh=false) thì không cộng strike, không kéo dài backoff.
+	if now := time.Now(); (!e.canRotate && now.Before(c.until)) || (e.canRotate && !fresh) {
+		if left := c.until.Sub(now); left > 0 {
+			return left
+		}
+		return cfg.TorRotateCooldown
 	}
 	c.strikes++
 	var d time.Duration
@@ -179,18 +187,19 @@ func (e *Egress) exhausted(model string, retryAfter time.Duration) time.Duration
 				d = cfg.TorBackoffMax
 			}
 		}
-	case retryAfter > 0:
-		// Không tin Retry-After quá lâu: IP direct có thể đổi (WAN kép), thăm dò lại sau tối đa CooldownMax.
+	case retryAfter > 0 && retryAfter <= cfg.CooldownMax:
 		d = retryAfter
 		if d > cfg.CooldownMax {
 			d = cfg.CooldownMax
 		}
 	default:
+		// Retry-After dài (vd 22h) không đáng tin: đo thực tế IP direct hồi phục sau ~1–2 phút (cửa sổ trượt), nên thăm dò
+		// sớm bằng 1 request duy nhất (probe lease) và giãn dần nếu vẫn 429.
 		shift := c.strikes - 1
 		if shift > 12 {
 			shift = 12
 		}
-		d = 30 * time.Second << shift
+		d = 15 * time.Second << shift
 		if d > cfg.CooldownMax {
 			d = cfg.CooldownMax
 		}
@@ -490,23 +499,30 @@ func (m *Manager) noteDirect(model string, directInflight int) {
 	n := w.add(time.Now().Unix())
 	m.dirMu.Unlock()
 	if n >= cfg.DirectWarnReqs || directInflight >= cfg.DirectWarnInflight {
-		m.prewarmTor("lưu lượng direct gần ngưỡng")
+		m.prewarmTor("lưu lượng direct gần ngưỡng", 1)
 	}
 }
 
-// prewarmTor đảm bảo có ít nhất 1 Tor đang chạy/khởi động (không làm gì nếu đã có), chạy nền.
-func (m *Manager) prewarmTor(reason string) {
+// prewarmTor đảm bảo có sẵn ít nhất `want` Tor đang chạy/khởi động (song song), chạy nền. Direct vừa 429 thì dựng 2 Tor
+// cùng lúc để có chỗ chịu tải ngay khi bootstrap xong.
+func (m *Manager) prewarmTor(reason string, want int) {
 	if !torAvailable {
 		return
 	}
+	if want > cfg.TorMax {
+		want = cfg.TorMax
+	}
 	m.mu.RLock()
-	have := m.torSpawned > 0 || len(m.egresses) > 1
+	have := m.torSpawned
+	static := len(m.egresses) > 1 && m.torSpawned == 0
 	m.mu.RUnlock()
-	if have {
+	if static || have >= want {
 		return
 	}
-	log.Printf("[Tor] bật Tor dự phòng (%s)", reason)
-	go m.growTor()
+	log.Printf("[Tor] bật %d Tor dự phòng (%s)", want-have, reason)
+	for i := have; i < want; i++ {
+		go m.growTorN(want)
+	}
 }
 
 // reapIdleTor tắt Tor do gateway chạy mà không có request quá TorIdleStop.

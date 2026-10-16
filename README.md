@@ -20,7 +20,7 @@ Model dùng được: `deepseek` (alias của `deepseek-v4.1-flash`, khuyên dù
 Hạn mức free tier của upstream tính theo **IP thoát ra × model** (không phụ thuộc session/device ID), và là cửa sổ trượt chứ không phải mốc cố định: IP direct bị 429 hồi phục sau một thời gian không dùng (đã quan sát phục hồi giữa ngày, không cần chờ 00:00 UTC). Gateway dựa vào đó:
 
 1. Mọi request đi **IP direct** của container trước (nhanh nhất).
-2. Khi direct trả `429` cho model đó, gateway ghi cooldown cho cặp **(direct × model)** và chuyển ngay sang **Tor**. Model khác vẫn dùng direct bình thường. Cooldown theo `Retry-After` của upstream, nhưng tối đa `COOLDOWN_MAX` (mặc định 10 phút) rồi thăm dò lại bằng **đúng 1 request** (WAN kép có thể đổi IP).
+2. Khi direct trả `429` cho model đó, gateway ghi cooldown cho cặp **(direct × model)** và chuyển ngay sang **Tor**. Model khác vẫn dùng direct bình thường. Cooldown theo `Retry-After` của upstream nếu không quá `COOLDOWN_MAX` (Retry-After dài kiểu "22 giờ" bị bỏ qua vì đo thực tế direct hồi phục sau 1–2 phút; khi đó thăm dò lại sau 15s, 30s, 1m... tối đa `COOLDOWN_MAX`) — (mặc định 10 phút) rồi thăm dò lại bằng **đúng 1 request** (WAN kép có thể đổi IP).
 3. Tor do **chính gateway chạy và giám sát** (tự khởi động lại khi chết) và **mặc định không chạy**. Tor chỉ được bật sẵn ở nền khi có dấu hiệu nguy hiểm: direct vừa bị 429, hoặc lưu lượng direct của một model đạt `DIRECT_WARN_REQS` request/2 phút, hoặc số request direct đồng thời đạt `DIRECT_WARN_INFLIGHT`. Cần thêm thì bật tới `TOR_MAX`; mỗi instance có trần `TOR_MAX_INFLIGHT` request đồng thời; nhàn rỗi quá `TOR_IDLE_STOP` thì tự tắt để nhường RAM. Tor khởi động mất 10–45 giây, nên nếu IP direct của bạn thường xuyên hết quota hãy đặt `TOR_WARM=1` để luôn có sẵn một Tor.
 4. Mỗi Tor instance giữ **một circuit/exit cho tới khi bị 429**, rồi đổi sang circuit mới tức thì bằng cách đổi username SOCKS (Tor tách circuit theo `IsolateSOCKSAuth`, không cần `NEWNYM` và không bị giới hạn 10 giây). Instance từng bị 429 thì bị đẩy xuống ưu tiên sau; sau 5 lần 429 liên tiếp thì giãn dần (tối đa `TOR_BACKOFF_MAX`) để không đập vào upstream khi cả bể exit hôm đó đã cạn.
 5. Hết đường thì chờ (tối đa `MAX_WAIT`); nếu không còn gì để chờ thì trả `429` kèm `Retry-After` ngay, không để client treo.
@@ -75,8 +75,8 @@ Biến nên đặt: `ALLOWED_IPS=<IP máy bạn>`, `TOR_MAX=2` (mỗi Tor chiế
 | `FORCE_TOR` | `false` | Không dùng direct (để đo/so sánh) |
 | `TOR_WARM` | `0` | Số Tor chạy sẵn lúc khởi động (0 = chỉ bật khi direct nguy hiểm) |
 | `TOR_IDLE_STOP` | `30m` | Tor nhàn rỗi quá lâu thì tắt |
-| `TOR_MAX_INFLIGHT` | `24` | Trần request đồng thời mỗi Tor |
-| `DIRECT_WARN_REQS` | `200` | Request direct/model trong 2 phút được coi là gần ngưỡng nguy hiểm (bật Tor sẵn) |
+| `TOR_MAX_INFLIGHT` | `40` | Trần request đồng thời mỗi Tor |
+| `DIRECT_WARN_REQS` | `150` | Request direct/model trong 2 phút được coi là gần ngưỡng nguy hiểm (bật Tor sẵn) |
 | `DIRECT_WARN_INFLIGHT` | `60` | Request direct đồng thời được coi là nguy hiểm |
 | `QUEUE_WAIT` | `30s` | Chờ slot tối đa trước khi trả 503 |
 | `TOR_MAX` (hoặc `TOR_COUNT`) | `4` | Số Tor tối đa được bật thêm khi bị 429 |
@@ -84,7 +84,7 @@ Biến nên đặt: `ALLOWED_IPS=<IP máy bạn>`, `TOR_MAX=2` (mỗi Tor chiế
 | `TOR_BACKOFF_MAX` | `2m` | Trần giãn nhịp của Tor sau chuỗi 429 |
 | `TOR_INSTANCES` | trống | Tor ngoài có sẵn, dạng `host:socks,host:socks` |
 | `PROXY_POOL` | trống | Proxy ngoài (URL `socks5://`, `http://`), cách nhau bằng dấu phẩy |
-| `COOLDOWN_MAX` | `10m` | Trần cooldown của direct/proxy tĩnh |
+| `COOLDOWN_MAX` | `2m` | Trần cooldown của direct/proxy tĩnh |
 | `MAX_WAIT` / `MAX_ATTEMPTS` | `90s` / `30` | Chờ tối đa / số lần thử mỗi request |
 | `STREAM_IDLE_TIMEOUT` | `120s` | Hủy stream upstream im lặng quá lâu |
 | `SESSION_ID_MODE` / `PROJECT_ID_MODE` | `client` | `client`, `fresh` hoặc `stable` |
@@ -134,3 +134,10 @@ Gateway giả danh client `opencode` và đổi egress để né giới hạn th
 | hybrid (direct trước) | 17–25 s | cả 9 request đều đi direct, không cần Tor |
 
 Direct nhanh hơn khoảng 1,5–2 lần nên mặc định là direct trước, Tor chỉ làm đường dự phòng. `opencode2api` (dự án tham khảo) cũng đổi IP, chỉ khác là nó dùng 9 daemon Tor × 144 identity xoay vòng và bỏ identity vừa bị 429 ngay.
+
+### Sức chịu tải đo được (deepseek, 1 IP direct, tải nhỏ ~470 token prompt)
+
+- Direct chịu tới khoảng **470 request / 2 phút** cho 1 model rồi bị 429 (cửa sổ trượt); với 100 request đồng thời đạt ~30 req/s, ttfb p50 ≈ 1,5 s.
+- Sau 429, IP direct hồi phục trong khoảng **1–2 phút** (dù `Retry-After` báo ~22 giờ), nên gateway bỏ qua Retry-After dài và thăm dò lại sau 15s/30s/1m bằng đúng 1 request.
+- Khi vượt trần, gateway chuyển sang Tor (dựng 2 Tor song song ngay khi direct 429, hoặc bật sẵn từ `DIRECT_WARN_REQS`). Một đợt 700 request/150 đồng thời vượt trần: 700/700 thành công, không lỗi phía client, nhưng đuôi trễ p95 ≈ 33 s do chờ Tor bootstrap.
+- Dồn liên tục hơn ~2.000 request trong vài phút làm cạn cả direct lẫn nhiều exit Tor: một phần request nhận 429 kèm `Retry-After` (không treo). Muốn tải bền vững cao hơn cần thêm IP thoát (proxy tĩnh `PROXY_POOL`) hoặc dùng nhiều model.

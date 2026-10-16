@@ -434,7 +434,7 @@ func TestPickPrefersHealthyTor(t *testing.T) {
 	m.add(b)
 	m.egresses[0].ready.Store(false) // không dùng direct
 	model := "deepseek-v4.1-flash-free"
-	a.exhausted(model, 0)
+	a.exhausted(model, 0, true)
 	a.cool[model].until = time.Now().Add(-time.Second) // đã hết cooldown nhưng còn strike
 	for i := 0; i < 6; i++ {
 		if got := m.pick(model, nil); got != b {
@@ -455,7 +455,7 @@ func TestProbeGating(t *testing.T) {
 	_, m := setup(t, toolStream, false)
 	d := m.egresses[0]
 	model := "deepseek-v4.1-flash-free"
-	d.exhausted(model, time.Hour)
+	d.exhausted(model, time.Hour, true)
 	d.cool[model].until = time.Now().Add(-time.Second) // hết cooldown nhưng còn strike => chỉ 1 request thăm dò
 	if m.pick(model, nil) != d {
 		t.Fatal("request đầu phải được thăm dò direct")
@@ -506,7 +506,7 @@ func TestTorBackoffAfterManyStrikes(t *testing.T) {
 	e := newTorEgress("t", "127.0.0.1:1")
 	var last time.Duration
 	for i := 1; i <= 12; i++ {
-		last = e.exhausted("m", time.Hour)
+		last = e.exhausted("m", time.Hour, true)
 		if i <= 4 && last != time.Second {
 			t.Fatalf("strike %d: cooldown %v, muốn %v", i, last, time.Second)
 		}
@@ -515,7 +515,7 @@ func TestTorBackoffAfterManyStrikes(t *testing.T) {
 		t.Errorf("sau nhiều strike phải giãn tới TorBackoffMax, got %v", last)
 	}
 	e.clear("m")
-	if d := e.exhausted("m", 0); d != time.Second {
+	if d := e.exhausted("m", 0, true); d != time.Second {
 		t.Errorf("thành công xong thì reset về cooldown ngắn, got %v", d)
 	}
 }
@@ -596,7 +596,7 @@ func TestStickyEgressPreferredWhenHealthy(t *testing.T) {
 			t.Fatalf("phải giữ egress đã phục vụ hội thoại (tor-b), got %s", got.Name)
 		}
 	}
-	b.exhausted(model, 0)
+	b.exhausted(model, 0, true)
 	b.cool[model].until = time.Now().Add(-time.Second)
 	if got := m.pick(model, b); got != a {
 		t.Errorf("egress sticky đã có strike thì phải chuyển sang egress khỏe, got %s", got.Name)
@@ -711,5 +711,28 @@ func TestQueueWaitReturns503(t *testing.T) {
 	resp, body := post(t, gw.URL+"/v1/chat/completions", `{"model":"deepseek","messages":[]}`)
 	if resp.StatusCode != 503 || resp.Header.Get("Retry-After") == "" {
 		t.Errorf("hết slot phải 503 kèm Retry-After, got %d %s", resp.StatusCode, body)
+	}
+}
+
+// Nhiều 429 đồng thời của cùng 1 sự kiện chỉ được tính 1 strike (không bùng nổ backoff).
+func TestConcurrent429CountsOnce(t *testing.T) {
+	old := cfg
+	defer func() { cfg = old }()
+	cfg = Config{CooldownMax: 2 * time.Minute, TorRotateCooldown: time.Second, TorBackoffMax: time.Minute}
+	e := newEgress("direct", kindDirect, nil)
+	first := e.exhausted("m", 0, true)
+	for i := 0; i < 50; i++ {
+		e.exhausted("m", 0, true)
+	}
+	if first != 15*time.Second || e.cool["m"].strikes != 1 {
+		t.Errorf("first=%v strikes=%d, want 15s/1", first, e.cool["m"].strikes)
+	}
+	tor := newEgress("tor-1", kindTor, nil)
+	tor.canRotate = true
+	for i := 0; i < 50; i++ {
+		tor.exhausted("m", 0, false)
+	}
+	if got := tor.cool["m"]; got != nil && got.strikes != 0 {
+		t.Errorf("429 từ circuit đã xoay không được cộng strike, got %d", got.strikes)
 	}
 }
