@@ -139,6 +139,24 @@ func TestScenarioCloudflareBlockedExit(t *testing.T) {
 	}
 }
 
+// S5b: Upstream chặn 1 exit (403 FreeTierError JSON) → đổi exit, client vẫn thành công.
+func TestScenarioFreeTierJSONBlockedExit(t *testing.T) {
+	_, url := torSetup(t, 2, func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Test-Egress") == "t.1" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(403)
+			w.Write([]byte(`{"type":"error","error":{"type":"FreeTierError","message":"OpenCode's free tier can only be used from within OpenCode."}}`))
+			return
+		}
+		okChat(w)
+	})
+	for i := range 4 {
+		if resp, _ := post(t, url+"/v1/chat/completions", chatReq); resp.StatusCode != 200 {
+			t.Fatalf("req %d: %d", i, resp.StatusCode)
+		}
+	}
+}
+
 // S6: bùng nổ 120 request đồng thời, mỗi identity trả 429 cho vài request đầu → tất cả client vẫn thành công.
 func TestScenarioBurstWithTransient429(t *testing.T) {
 	var mu sync.Mutex

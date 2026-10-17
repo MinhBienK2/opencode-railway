@@ -336,18 +336,19 @@ func forward(ctx context.Context, model string, isPool bool, url, accept, key st
 			last = &gwError{status: http.StatusBadGateway, typ: "upstream_error", msg: fmt.Sprintf("Upstream HTTP %d", resp.StatusCode)}
 			continue
 
-		case resp.StatusCode == http.StatusForbidden && e.Kind != kindDirect &&
-			!strings.Contains(resp.Header.Get("Content-Type"), "json"):
-			// Cloudflare chặn exit node Tor (trả HTML/challenge), khác với FreeTierError dạng JSON.
+		case resp.StatusCode == http.StatusForbidden:
+			snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 			resp.Body.Close()
 			cancel()
 			e.inflight.Add(-1)
 			e.errs.Add(1)
 			e.transient(m, 30*time.Second)
-			e.rotate(gen)
+			if e.canRotate {
+				e.rotate(gen)
+			}
 			avoidDaemon = e.daemon
-			log.Printf("[%s] attempt=%d model=%s 403 non-JSON (exit bị chặn), đổi exit", e.Name, attempt, m)
-			last = &gwError{status: http.StatusBadGateway, typ: "upstream_error", msg: "Egress blocked"}
+			log.Printf("[%s] attempt=%d model=%s 403 (exit bị chặn hoặc FreeTierError), đổi egress body=%q", e.Name, attempt, m, string(snippet))
+			last = &gwError{status: http.StatusForbidden, typ: "permission_error", msg: "Egress blocked: " + strings.TrimSpace(string(snippet))}
 			continue
 		}
 
