@@ -430,6 +430,32 @@ func TestMapModelNames(t *testing.T) {
 	}
 }
 
+func TestProxyRefreshURLInvokedOn429(t *testing.T) {
+	oldCfg := cfg
+	defer func() { cfg = oldCfg }()
+
+	var refreshed atomic.Int32
+	refreshSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		refreshed.Add(1)
+		w.WriteHeader(200)
+		w.Write([]byte(`{"status":"ok"}`))
+	}))
+	defer refreshSrv.Close()
+
+	cfg.ProxyRefreshURL = refreshSrv.URL
+	cfg.ProxyWarmup = 10 * time.Millisecond
+
+	m := newManager(context.Background())
+	p := newEgress("proxy1", kindProxy, nil)
+	p.ready.Store(true)
+	m.add(p)
+
+	m.refreshRotatingProxy(p)
+	if refreshed.Load() != 1 {
+		t.Fatalf("refresh URL phải được gọi, got %d", refreshed.Load())
+	}
+}
+
 func TestPickPrefersHealthyTor(t *testing.T) {
 	_, m := setup(t, toolStream, false)
 	a, b := newTorEgress("tor-a", "127.0.0.1:1"), newTorEgress("tor-b", "127.0.0.1:1")

@@ -96,6 +96,8 @@ Biến nên đặt: `ALLOWED_IPS=<IP máy bạn>`, `TOR_WARM=1 TOR_MAX=2 TOR_IDE
 | `TOR_BACKOFF_MAX` | `2m` | Trần giãn nhịp của Tor sau chuỗi 429 |
 | `TOR_INSTANCES` | trống | Tor ngoài có sẵn, dạng `host:socks,host:socks` |
 | `PROXY_POOL` | trống | Proxy ngoài (URL `socks5://`, `http://`), cách nhau bằng dấu phẩy |
+| `PROXY_REFRESH_URL` | trống | URL gọi GET đổi IP cho proxy xoay khi bị 429 (vd: `proxyxoay.shop/api/get.php?key=...`) |
+| `PROXY_WARMUP` | `3s` | Thời gian chờ proxy xoay đổi IP xong trước khi gửi request tiếp |
 | `COOLDOWN_MAX` | `2m` | Trần cooldown của direct/proxy tĩnh |
 | `MAX_WAIT` / `MAX_ATTEMPTS` | `90s` / `30` | Chờ tối đa / số lần thử mỗi request |
 | `STREAM_IDLE_TIMEOUT` | `180s` | Hủy stream upstream im lặng quá lâu |

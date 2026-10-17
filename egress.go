@@ -369,6 +369,8 @@ type Manager struct {
 	torStarting int
 	ctx         context.Context
 	wg          sync.WaitGroup
+	proxyRefMu   sync.Mutex
+	proxyRefLast time.Time
 }
 
 func newManager(ctx context.Context) *Manager {
@@ -415,28 +417,57 @@ func (m *Manager) add(e *Egress) {
 }
 
 // addStatic nạp các proxy khai báo sẵn: TOR_INSTANCES (host:socks, phần :control nếu có sẽ bị bỏ qua) và PROXY_POOL (URL).
+// addStatic nạp các proxy khai báo sẵn: TOR_INSTANCES (host:socks) và PROXY_POOL (URL).
 func (m *Manager) addStatic(torInstances, proxyPool string) {
-	if cfg.DisableTor {
-		return
-	}
-	for i, item := range splitList(torInstances) {
-		parts := strings.Split(item, ":")
-		if len(parts) < 2 {
-			continue
-		}
-		for _, e := range newTorGroup(fmt.Sprintf("tor-ext%d", i+1), parts[0]+":"+parts[1], cfg.TorIdentities) {
-			e.ready.Store(true)
-			m.add(e)
+	if !cfg.DisableTor {
+		for i, item := range splitList(torInstances) {
+			parts := strings.Split(item, ":")
+			if len(parts) < 2 {
+				continue
+			}
+			for _, e := range newTorGroup(fmt.Sprintf("tor-ext%d", i+1), parts[0]+":"+parts[1], cfg.TorIdentities) {
+				e.ready.Store(true)
+				m.add(e)
+			}
 		}
 	}
 	for i, p := range splitList(proxyPool) {
 		u, err := url.Parse(p)
 		if err != nil {
+			log.Printf("[Proxy] URL proxy không hợp lệ %q: %v", p, err)
 			continue
 		}
 		e := newEgress(fmt.Sprintf("proxy%d", i+1), kindProxy, http.ProxyURL(u))
 		e.daemon = fmt.Sprintf("proxy%d", i+1)
 		e.ready.Store(true)
+		m.add(e)
+		log.Printf("[Proxy] đã nạp proxy ngoài: %s (%s)", e.Name, p)
+	}
+}
+
+func (m *Manager) refreshRotatingProxy(e *Egress) {
+	if cfg.ProxyRefreshURL == "" {
+		return
+	}
+	m.proxyRefMu.Lock()
+	if time.Since(m.proxyRefLast) < 5*time.Second {
+		m.proxyRefMu.Unlock()
+		return
+	}
+	m.proxyRefLast = time.Now()
+	m.proxyRefMu.Unlock()
+
+	log.Printf("[Proxy] %s bị 429, đang gọi API đổi IP: %s", e.Name, cfg.ProxyRefreshURL)
+	req, err := http.NewRequest(http.MethodGet, cfg.ProxyRefreshURL, nil)
+	if err == nil {
+		resp, rerr := http.DefaultClient.Do(req)
+		if rerr == nil {
+			resp.Body.Close()
+			log.Printf("[Proxy] đổi IP thành công, chờ %v để proxy warmup...", cfg.ProxyWarmup)
+			time.Sleep(cfg.ProxyWarmup)
+		} else {
+			log.Printf("[Proxy] gọi API đổi IP thất bại: %v", rerr)
+		}
 	}
 }
 

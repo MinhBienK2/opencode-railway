@@ -362,6 +362,9 @@ func forward(ctx context.Context, model string, isPool bool, url, accept, key st
 			if e.Kind == kindDirect {
 				mgr.prewarmTor("direct vừa bị 429", 2)
 			}
+			if e.Kind == kindProxy {
+				mgr.refreshRotatingProxy(e)
+			}
 			e.rotate(gen)
 			avoidDaemons = appendAvoid(avoidDaemons, e.daemon)
 			log.Printf("[%s] attempt=%d model=%s 429 retry-after=%v cooldown=%v ttfb=%v body=%q",
