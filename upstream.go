@@ -157,7 +157,7 @@ func setUpstreamHeaders(req *http.Request, accept, key string) {
 	}
 	req.Header.Set("Authorization", "Bearer public")
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "opencode/1.19.0 ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.14")
+	req.Header.Set("User-Agent", "opencode/1.19.3")
 	req.Header.Set("x-opencode-client", "cli")
 	req.Header.Set("x-opencode-project", proj)
 	req.Header.Set("x-opencode-request", newRequestID())
@@ -244,6 +244,13 @@ func forward(ctx context.Context, model string, isPool bool, url, accept, key st
 		// Tổng thời gian tối đa cho 1 request (MaxWait): đã có lỗi và hết ngân sách thì trả lỗi cuối, không thử mãi.
 		if last != nil && time.Now().After(deadline) {
 			return nil, last
+		}
+		if attempt > 0 {
+			select {
+			case <-time.After(150 * time.Millisecond):
+			case <-ctx.Done():
+				return nil, &gwError{status: 499, typ: "client_closed", msg: "client closed request"}
+			}
 		}
 		m, e, gerr := mgr.routeAvoid(ctx, model, isPool, deadline, avoidDaemon)
 		if gerr != nil {
@@ -342,7 +349,15 @@ func forward(ctx context.Context, model string, isPool bool, url, accept, key st
 			cancel()
 			e.inflight.Add(-1)
 			e.errs.Add(1)
-			e.transient(m, 30*time.Second)
+			coolDuration := 30 * time.Second
+			if e.Kind == kindDirect {
+				coolDuration = cfg.DirectCooldown
+				if coolDuration <= 0 {
+					coolDuration = 2 * time.Minute
+				}
+				mgr.prewarmTor("direct vừa bị 403/hết hạn mức", 2)
+			}
+			e.transient(m, coolDuration)
 			if e.canRotate {
 				e.rotate(gen)
 			}
