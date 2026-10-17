@@ -257,6 +257,18 @@ func normalizeLastError(last *gwError) *gwError {
 	}
 	return last
 }
+func nextModelInPool(current string) string {
+	n := len(freeModelPool)
+	for i, m := range freeModelPool {
+		if m == current {
+			return freeModelPool[(i+1)%n]
+		}
+	}
+	if n > 0 {
+		return freeModelPool[0]
+	}
+	return current
+}
 
 // forward gửi request tới upstream, tự chọn egress (direct trước) và model (nếu isPool).
 // Retry khi 429/502/503/504/lỗi mạng bằng egress khác; không bao giờ retry sau khi đã có byte gửi về client
@@ -265,6 +277,8 @@ func forward(ctx context.Context, model string, isPool bool, url, accept, key st
 	deadline := time.Now().Add(cfg.MaxWait)
 	var last *gwError
 	var avoidDaemons []string
+	currentModel := model
+	var modelFailures int
 
 	for attempt := 0; attempt < cfg.MaxAttempts; attempt++ {
 		// Tổng thời gian tối đa cho 1 request (MaxWait): đã có lỗi và hết ngân sách thì trả lỗi cuối, không thử mãi.
@@ -278,7 +292,7 @@ func forward(ctx context.Context, model string, isPool bool, url, accept, key st
 				return nil, &gwError{status: 499, typ: "client_closed", msg: "client closed request"}
 			}
 		}
-		m, e, gerr := mgr.routeAvoid(ctx, model, isPool, deadline, avoidDaemons...)
+		m, e, gerr := mgr.routeAvoid(ctx, currentModel, isPool, deadline, avoidDaemons...)
 		if gerr != nil {
 			return nil, gerr
 		}
@@ -354,6 +368,16 @@ func forward(ctx context.Context, model string, isPool bool, url, accept, key st
 				e.Name, attempt, m, ra, d.Round(time.Second), ttfb.Round(time.Millisecond), string(snippet))
 			last = &gwError{status: http.StatusTooManyRequests, typ: "rate_limit_error",
 				msg: "Rate limited on all egress paths. Retry shortly.", retryAfter: d}
+			modelFailures++
+			if modelFailures >= 3 && isFreeModelInPool(currentModel) {
+				next := nextModelInPool(currentModel)
+				if next != currentModel {
+					log.Printf("[Router] model=%s bị 429 liên tiếp, tự động failover sang model=%s", currentModel, next)
+					currentModel = next
+					modelFailures = 0
+					avoidDaemons = nil
+				}
+			}
 			continue
 
 		case resp.StatusCode == http.StatusInternalServerError || resp.StatusCode == http.StatusBadGateway ||
@@ -390,6 +414,16 @@ func forward(ctx context.Context, model string, isPool bool, url, accept, key st
 			avoidDaemons = appendAvoid(avoidDaemons, e.daemon)
 			log.Printf("[%s] attempt=%d model=%s 403 (exit bị chặn hoặc FreeTierError), đổi egress body=%q", e.Name, attempt, m, string(snippet))
 			last = &gwError{status: http.StatusForbidden, typ: "permission_error", msg: "Egress blocked: " + strings.TrimSpace(string(snippet))}
+			modelFailures++
+			if modelFailures >= 3 && isFreeModelInPool(currentModel) {
+				next := nextModelInPool(currentModel)
+				if next != currentModel {
+					log.Printf("[Router] model=%s bị lỗi liên tiếp, tự động failover sang model=%s", currentModel, next)
+					currentModel = next
+					modelFailures = 0
+					avoidDaemons = nil
+				}
+			}
 			continue
 		}
 
