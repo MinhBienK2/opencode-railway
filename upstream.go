@@ -243,6 +243,20 @@ func appendAvoid(list []string, d string) []string {
 	}
 	return list
 }
+func normalizeLastError(last *gwError) *gwError {
+	if last == nil {
+		return &gwError{status: http.StatusBadGateway, typ: "upstream_error", msg: "No upstream attempt made"}
+	}
+	if last.status == http.StatusForbidden {
+		return &gwError{
+			status:     http.StatusTooManyRequests,
+			typ:        "rate_limit_error",
+			msg:        "All egress paths are currently rate limited on upstream free tier. Retrying shortly.",
+			retryAfter: 15 * time.Second,
+		}
+	}
+	return last
+}
 
 // forward gửi request tới upstream, tự chọn egress (direct trước) và model (nếu isPool).
 // Retry khi 429/502/503/504/lỗi mạng bằng egress khác; không bao giờ retry sau khi đã có byte gửi về client
@@ -255,7 +269,7 @@ func forward(ctx context.Context, model string, isPool bool, url, accept, key st
 	for attempt := 0; attempt < cfg.MaxAttempts; attempt++ {
 		// Tổng thời gian tối đa cho 1 request (MaxWait): đã có lỗi và hết ngân sách thì trả lỗi cuối, không thử mãi.
 		if last != nil && time.Now().After(deadline) {
-			return nil, last
+			return nil, normalizeLastError(last)
 		}
 		if attempt > 0 {
 			select {
@@ -289,10 +303,10 @@ func forward(ctx context.Context, model string, isPool bool, url, accept, key st
 		// Circuit Tor kẹt (chưa có header sau ttfbLimit): bỏ, đổi exit và thử đường khác thay vì để client chờ.
 		// Với prompt lớn (như omp gửi 70k-100k token, payload 200KB-400KB), upstream cần 15-30s để xử lý context.
 		ttfbLimit := cfg.TtfbRetry
-		if bodyLen := len(payload); bodyLen > 100*1024 && ttfbLimit < 25*time.Second {
-			ttfbLimit = 25 * time.Second
-		} else if bodyLen > 30*1024 && ttfbLimit < 20*time.Second {
-			ttfbLimit = 20 * time.Second
+		if bodyLen := len(payload); bodyLen > 100*1024 && ttfbLimit < 60*time.Second {
+			ttfbLimit = 60 * time.Second
+		} else if bodyLen > 30*1024 && ttfbLimit < 40*time.Second {
+			ttfbLimit = 40 * time.Second
 		}
 		var slow atomic.Bool
 		var slowTimer *time.Timer
@@ -388,8 +402,5 @@ func forward(ctx context.Context, model string, isPool bool, url, accept, key st
 		resp.Body = &idleBody{rc: resp.Body, d: cfg.StreamIdle, t: time.AfterFunc(cfg.StreamIdle, cancel)}
 		return &upstream{resp: resp, egress: e, model: m, ttfb: ttfb, cancel: cancel}, nil
 	}
-	if last == nil {
-		last = &gwError{status: http.StatusBadGateway, typ: "upstream_error", msg: "No upstream attempt made"}
-	}
-	return nil, last
+	return nil, normalizeLastError(last)
 }
