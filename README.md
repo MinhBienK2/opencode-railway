@@ -85,6 +85,7 @@ Biến nên đặt: `ALLOWED_IPS=<IP máy bạn>`, `TOR_WARM=1 TOR_MAX=2 TOR_IDE
 | `TOR_EXIT_NODES_EU` | `{de},{nl},{fr},{gb},{ch}` | Giới hạn quốc gia exit Tây Âu |
 | `TTFB_RETRY` | `15s` | Tor chưa có header sau thời gian này thì đổi circuit |
 | `PREFER_DIRECT` | `false` | `true`: direct trước, Tor khi 429 |
+| `DIRECT_COOLDOWN` | `2m` | Thời gian direct nghỉ khi bị 429 (cửa sổ trượt upstream); trong thời gian này mọi request vào thẳng Tor |
 | `TOR_IDLE_STOP` | `30m` | Tor nhàn rỗi quá lâu thì tắt |
 | `TOR_MAX_INFLIGHT` | `24` | Trần request đồng thời mỗi identity |
 | `DIRECT_WARN_REQS` | `150` | (PREFER_DIRECT) request direct/model trong 2 phút được coi là gần ngưỡng nguy hiểm |

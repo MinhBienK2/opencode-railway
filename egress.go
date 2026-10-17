@@ -312,15 +312,19 @@ func (e *Egress) exhausted(model string, retryAfter time.Duration, fresh bool) t
 			d = cfg.CooldownMax
 		}
 	default:
-		// Retry-After dài (vd 22h) không đáng tin: đo thực tế IP direct hồi phục sau ~1–2 phút (cửa sổ trượt), nên thăm dò
-		// sớm bằng 1 request duy nhất (probe lease) và giãn dần nếu vẫn 429.
-		shift := c.strikes - 1
-		if shift > 12 {
-			shift = 12
-		}
-		d = 15 * time.Second << shift
-		if d > cfg.CooldownMax {
-			d = cfg.CooldownMax
+		// Retry-After dài (vd 22h) không đáng tin: đo thực tế IP direct hồi phục sau ~1–2 phút (cửa sổ trượt).
+		// Direct IP nghỉ đủ lâu theo DirectCooldown (mặc định 2m) để hồi phục 100% quota, trong thời gian này toàn bộ request vào thẳng Tor.
+		if e.Kind == kindDirect && cfg.DirectCooldown > 0 {
+			d = cfg.DirectCooldown
+		} else {
+			shift := c.strikes - 1
+			if shift > 12 {
+				shift = 12
+			}
+			d = 15 * time.Second << shift
+			if d > cfg.CooldownMax {
+				d = cfg.CooldownMax
+			}
 		}
 	}
 	c.until = time.Now().Add(d)

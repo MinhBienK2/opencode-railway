@@ -157,6 +157,44 @@ func TestScenarioFreeTierJSONBlockedExit(t *testing.T) {
 	}
 }
 
+// S5c: Direct bị 429 -> cooldown 2m, request hiện tại và các request sau vào thẳng Tor.
+func TestScenarioDirect429FailsOverToTorSeamlessly(t *testing.T) {
+	oldCfg := cfg
+	defer func() { cfg = oldCfg }()
+
+	var directAttempts atomic.Int32
+	var torAttempts atomic.Int32
+
+	gw, _ := setup(t, func(w http.ResponseWriter, r *http.Request) {
+		egress := r.Header.Get("X-Test-Egress")
+		if egress == "direct" {
+			directAttempts.Add(1)
+			w.Header().Set("Retry-After", "54000")
+			w.WriteHeader(429)
+			w.Write([]byte(`{"type":"error","error":{"type":"FreeUsageLimitError"}}`))
+			return
+		}
+		torAttempts.Add(1)
+		okChat(w)
+	}, true)
+	cfg.PreferDirect = true
+	cfg.DirectCooldown = 2 * time.Minute
+
+	for i := range 5 {
+		resp, _ := post(t, gw.URL+"/v1/chat/completions", chatReq)
+		if resp.StatusCode != 200 {
+			t.Fatalf("req %d failed: %d", i, resp.StatusCode)
+		}
+	}
+
+	if d := directAttempts.Load(); d != 1 {
+		t.Fatalf("directAttempts = %d, want exactly 1", d)
+	}
+	if tor := torAttempts.Load(); tor != 5 {
+		t.Fatalf("torAttempts = %d, want 5", tor)
+	}
+}
+
 // S6: bùng nổ 120 request đồng thời, mỗi identity trả 429 cho vài request đầu → tất cả client vẫn thành công.
 func TestScenarioBurstWithTransient429(t *testing.T) {
 	var mu sync.Mutex
