@@ -23,17 +23,18 @@ import (
 const (
 	defaultPort = "8080"
 	baseZenURL  = "https://opencode.ai/zen/v1"
-	baseInfURL  = "https://opencode.ai/inference/v1"
+	baseInfURL  = "https://opencode.ai/zen/v1"
 )
 
 var freeModelPool = []string{
+	"deepseek-v4.1-flash-free",
 	"nemotron-3.5-lightning-free",
 	"big-pickle",
-	"cat-jam-free",
-	"space-bunny-free",
 	"mimo-v2.6-flash-free",
-	"step-5-preview-free",
+	"beam-free",
+	"space-bunny-free",
 	"longcat-2.5-preview-free",
+	"glm-5.3-flash-free",
 }
 
 var (
