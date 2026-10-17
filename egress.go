@@ -531,6 +531,14 @@ func (m *Manager) pickRestAvoid(rest []*Egress, model string, avoidMap map[strin
 	}
 	return best
 }
+func isFreeModelInPool(model string) bool {
+	for _, m := range freeModelPool {
+		if m == model {
+			return true
+		}
+	}
+	return false
+}
 
 func (m *Manager) route(ctx context.Context, model string, isPool bool, deadline time.Time) (string, *Egress, *gwError) {
 	return m.routeAvoid(ctx, model, isPool, deadline)
@@ -547,14 +555,29 @@ func (m *Manager) routeAvoid(ctx context.Context, model string, isPool bool, dea
 					return cand, e, nil
 				}
 			}
-		} else if e := m.pickAvoid(model, avoid...); e != nil {
-			return model, e, nil
+		} else {
+			if e := m.pickAvoid(model, avoid...); e != nil {
+				return model, e, nil
+			}
+			if cfg.AutoModelFallback {
+				n := len(freeModelPool)
+				start := int(atomic.AddUint32(&poolIndex, 1))
+				for i := range n {
+					cand := freeModelPool[(start+i)%n]
+					if cand != model {
+						if e := m.pickAvoid(cand, avoid...); e != nil {
+							log.Printf("[Router] model=%s cạn quota trên mọi đường, tự động failover sang model=%s", model, cand)
+							return cand, e, nil
+						}
+					}
+				}
+			}
 		}
 
 		m.growTor()
 
 		models := []string{model}
-		if isPool {
+		if isPool || (cfg.AutoModelFallback && isFreeModelInPool(model)) {
 			models = freeModelPool
 		}
 		// Không có Tor nào đang/sắp chạy và đường nhanh nhất còn khoá lâu hơn thời gian chờ cho phép: báo ngay, đừng treo client.

@@ -26,6 +26,7 @@ type Config struct {
 	TorMaxInflight     int             // trần request đồng thời mỗi Tor (vượt thì bật thêm Tor hoặc chờ)
 	DirectWarnReqs     int             // số request direct cho 1 model trong 2 phút được coi là "gần ngưỡng nguy hiểm" => bật Tor sẵn
 	DirectWarnInflight int             // số request direct đang chạy cùng lúc được coi là nguy hiểm
+	AutoModelFallback  bool            // tự động failover sang model khác trong freeModelPool khi model yêu cầu cạn quota trên mọi egress
 	DirectCooldown     time.Duration   // thời gian direct nghỉ khi bị 429 (mặc định 2m: cửa sổ trượt upstream); trong thời gian này request vào thẳng Tor
 	QueueWait          time.Duration   // chờ slot tối đa trước khi trả 503
 	TorBackoffMax      time.Duration   // trần backoff của Tor sau chuỗi 429 liên tiếp (exit cạn quota thì đừng đập thêm)
@@ -124,6 +125,7 @@ func loadConfig() Config {
 		DirectWarnInflight:   envInt("DIRECT_WARN_INFLIGHT", 60, 1),
 		DirectCooldown:       envDur("DIRECT_COOLDOWN", 2*time.Minute),
 		QueueWait:            envDur("QUEUE_WAIT", 30*time.Second),
+		AutoModelFallback:    envBoolDef("AUTO_MODEL_FALLBACK", true),
 		DisableTor:           envBool("DISABLE_TOR"),
 		ForceTor:             envBool("FORCE_TOR"),
 		TorMax:               torMax,
