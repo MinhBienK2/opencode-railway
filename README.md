@@ -168,7 +168,7 @@ Mỗi kịch bản có test tự động (`scenario_test.go`, upstream giả) v�
 | 429 hàng loạt cùng lúc | Tính 1 lần (không bùng nổ backoff); 120 request đồng thời cùng gặp 429 vẫn thành công hết |
 | 502/503/504, lỗi mạng | Identity nghỉ ngắn, thử identity khác |
 | Circuit Tor kẹt (không có header) | Sau `TTFB_RETRY` bỏ circuit đó, thử identity khác |
-| Cloudflare chặn exit (403 HTML) | Đổi exit, thử lại |
+| Exit bị chặn / FreeTierError (403 HTML/JSON) | Đổi exit (rotate circuit), nghỉ ngắn 30s, thử identity/daemon khác hoặc fallback direct |
 | Identity sau cooldown | Được dùng lại (không bị loại vĩnh viễn) |
 | Daemon Tor bị kill giữa tải (live: kill 2 daemon khi 40 đồng thời, 400 request) | 400/400 thành công; daemon tự khởi động lại, autoscale bù |
 | Client bỏ giữa chừng | Huỷ request upstream, trả slot/inflight |
