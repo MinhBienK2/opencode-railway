@@ -453,25 +453,31 @@ func splitList(s string) []string {
 // pick chọn egress cho model (cache của upstream theo prefix chứ không theo IP/session nên không cần gắn hội thoại với egress): mặc định Tor/proxy trước (PREFER_DIRECT=true thì direct trước); hết thì ưu tiên egress Tor đã phục vụ hội thoại này (giữ cache) nếu nó còn khỏe,
 // sau đó Tor/proxy khỏe nhất/rảnh nhất. nil nếu chưa có cái nào dùng được.
 func (m *Manager) pick(model string) *Egress {
-	return m.pickAvoid(model, "")
+	return m.pickAvoid(model)
 }
 
-func (m *Manager) pickAvoid(model, avoidDaemon string) *Egress {
+func (m *Manager) pickAvoid(model string, avoid ...string) *Egress {
+	avoidMap := make(map[string]bool, len(avoid))
+	for _, a := range avoid {
+		if a != "" {
+			avoidMap[a] = true
+		}
+	}
 	list := m.snapshot()
 	direct := list[0]
-	if cfg.PreferDirect && (avoidDaemon == "" || direct.daemon != avoidDaemon) && direct.available(model) && direct.claim(model) {
+	if cfg.PreferDirect && !avoidMap[direct.daemon] && direct.available(model) && direct.claim(model) {
 		return direct
 	}
-	if e := m.pickRestAvoid(list[1:], model, avoidDaemon); e != nil {
+	if e := m.pickRestAvoid(list[1:], model, avoidMap); e != nil {
 		return e
 	}
-	if avoidDaemon != "" {
-		if e := m.pickRestAvoid(list[1:], model, ""); e != nil {
+	if len(avoidMap) > 0 {
+		if e := m.pickRestAvoid(list[1:], model, nil); e != nil {
 			return e
 		}
 	}
 	// Tor/proxy chưa sẵn sàng hoặc đều đang nghỉ: direct làm đường dự phòng thay vì bắt client chờ.
-	if !cfg.PreferDirect && (avoidDaemon == "" || direct.daemon != avoidDaemon) && direct.available(model) && direct.claim(model) {
+	if !cfg.PreferDirect && !avoidMap[direct.daemon] && direct.available(model) && direct.claim(model) {
 		return direct
 	}
 	if !cfg.PreferDirect && direct.available(model) && direct.claim(model) {
@@ -481,7 +487,7 @@ func (m *Manager) pickAvoid(model, avoidDaemon string) *Egress {
 }
 
 func (m *Manager) pickRest(rest []*Egress, model string) *Egress {
-	return m.pickRestAvoid(rest, model, "")
+	return m.pickRestAvoid(rest, model, nil)
 }
 
 // loadScore: càng thấp càng nên chọn. Circuit chưa đủ mẫu coi như bằng trung vị (để được thử), mỗi request đang chạy
@@ -497,7 +503,7 @@ func (e *Egress) loadScore(median time.Duration) float64 {
 	return float64(d) * (1 + 0.25*float64(e.inflight.Load()))
 }
 
-func (m *Manager) pickRestAvoid(rest []*Egress, model, avoidDaemon string) *Egress {
+func (m *Manager) pickRestAvoid(rest []*Egress, model string, avoidMap map[string]bool) *Egress {
 	if len(rest) == 0 {
 		return nil
 	}
@@ -508,7 +514,7 @@ func (m *Manager) pickRestAvoid(rest []*Egress, model, avoidDaemon string) *Egre
 	med := m.medianLatency()
 	for i := range rest {
 		e := rest[(start+i)%len(rest)]
-		if avoidDaemon != "" && e.daemon == avoidDaemon {
+		if len(avoidMap) > 0 && avoidMap[e.daemon] {
 			continue
 		}
 		if !e.available(model) || (e.canRotate && int(e.inflight.Load()) >= cfg.TorMaxInflight) {
@@ -527,21 +533,21 @@ func (m *Manager) pickRestAvoid(rest []*Egress, model, avoidDaemon string) *Egre
 }
 
 func (m *Manager) route(ctx context.Context, model string, isPool bool, deadline time.Time) (string, *Egress, *gwError) {
-	return m.routeAvoid(ctx, model, isPool, deadline, "")
+	return m.routeAvoid(ctx, model, isPool, deadline)
 }
 
-func (m *Manager) routeAvoid(ctx context.Context, model string, isPool bool, deadline time.Time, avoidDaemon string) (string, *Egress, *gwError) {
+func (m *Manager) routeAvoid(ctx context.Context, model string, isPool bool, deadline time.Time, avoid ...string) (string, *Egress, *gwError) {
 	for {
 		if isPool {
 			n := len(freeModelPool)
 			start := int(atomic.AddUint32(&poolIndex, 1))
 			for i := range n {
 				cand := freeModelPool[(start+i)%n]
-				if e := m.pickAvoid(cand, avoidDaemon); e != nil {
+				if e := m.pickAvoid(cand, avoid...); e != nil {
 					return cand, e, nil
 				}
 			}
-		} else if e := m.pickAvoid(model, avoidDaemon); e != nil {
+		} else if e := m.pickAvoid(model, avoid...); e != nil {
 			return model, e, nil
 		}
 
