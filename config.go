@@ -109,7 +109,7 @@ func loadConfig() Config {
 		Port:                 envStr("PORT", defaultPort),
 		MaxConcurrency:       envInt("MAX_CONCURRENCY", 1000, 1),
 		MaxBodyBytes:         int64(envInt("MAX_BODY_MB", 32, 1)) << 20,
-		MaxWait:              envDur("MAX_WAIT", 90*time.Second),
+		MaxWait:              envDur("MAX_WAIT", 180*time.Second),
 		MaxAttempts:          envInt("MAX_ATTEMPTS", 30, 1),
 		StreamIdle:           envDur("STREAM_IDLE_TIMEOUT", 180*time.Second),
 		SessionIDMode:        strings.ToLower(envStr("SESSION_ID_MODE", "client")),

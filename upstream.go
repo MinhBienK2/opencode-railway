@@ -277,10 +277,10 @@ func forward(ctx context.Context, model string, isPool bool, url, accept, key st
 		// Circuit Tor kẹt (chưa có header sau ttfbLimit): bỏ, đổi exit và thử đường khác thay vì để client chờ.
 		// Với prompt lớn (như omp gửi 70k-100k token, payload 200KB-400KB), upstream cần 15-30s để xử lý context.
 		ttfbLimit := cfg.TtfbRetry
-		if bodyLen := len(payload); bodyLen > 100*1024 && ttfbLimit < 45*time.Second {
-			ttfbLimit = 45 * time.Second
-		} else if bodyLen > 30*1024 && ttfbLimit < 30*time.Second {
-			ttfbLimit = 30 * time.Second
+		if bodyLen := len(payload); bodyLen > 100*1024 && ttfbLimit < 25*time.Second {
+			ttfbLimit = 25 * time.Second
+		} else if bodyLen > 30*1024 && ttfbLimit < 20*time.Second {
+			ttfbLimit = 20 * time.Second
 		}
 		var slow atomic.Bool
 		var slowTimer *time.Timer

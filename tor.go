@@ -87,26 +87,13 @@ func (m *Manager) startTor(idx int) error {
 	// MaxCircuitDirtiness dài: exit còn quota thì giữ lâu, chỉ đổi khi bị 429.
 	torrc := fmt.Sprintf("SocksPort 127.0.0.1:%d IsolateSOCKSAuth\nDataDirectory %s\nLog notice stdout\nAvoidDiskWrites 1\nMaxCircuitDirtiness 7200\n",
 		socks, filepath.Join(dir, "data"))
-	// Phân tầng quốc gia 3 cấp theo chu kỳ daemon:
-	// - idx % 3 == 1: Châu Á (ping thấp, ~1.5s): {sg},{jp},{hk},{kr}
-	// - idx % 3 == 2: Tây Âu (bể IP gigabit khổng lồ, rất ít khi 429): {de},{nl},{fr},{gb},{ch}
-	// - idx % 3 == 0: Toàn cầu (không giới hạn, nguồn IP dự phòng)
-	switch idx % 3 {
-	case 1:
-		nodes := cfg.TorExitNodes
-		if nodes == "" {
-			nodes = "{sg},{jp},{hk},{kr}"
-		}
-		torrc += fmt.Sprintf("ExitNodes %s\n", nodes)
-	case 2:
-		eu := cfg.TorExitNodesEU
-		if eu == "" {
-			eu = "{de},{nl},{fr},{gb},{ch}"
-		}
-		torrc += fmt.Sprintf("ExitNodes %s\n", eu)
-	case 0:
-		// Toàn cầu: không đặt ExitNodes
+	// Toàn bộ daemon Tor ưu tiên exit node Châu Á sạch ({sg},{jp},{hk},{kr},{tw}):
+	// Ping thấp (~1.5s) và không bị OpenCode chặn bằng FreeTierError như exit node Âu/Mỹ.
+	nodes := cfg.TorExitNodes
+	if nodes == "" {
+		nodes = "{sg},{jp},{hk},{kr},{tw}"
 	}
+	torrc += fmt.Sprintf("ExitNodes %s\n", nodes)
 	if err := os.WriteFile(conf, []byte(torrc), 0o600); err != nil {
 		return err
 	}
