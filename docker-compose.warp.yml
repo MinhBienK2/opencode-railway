@@ -1,0 +1,32 @@
+services:
+  warp:
+    image: caomingjun/warp:latest
+    container_name: warp-proxy
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    ports:
+      - "1080:1080"
+
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: orw-new:latest
+    container_name: orw-prod
+    restart: unless-stopped
+    depends_on:
+      - warp
+    ports:
+      - "8090:8080"
+    environment:
+      DISABLE_TOR: "true"
+      PROXY_POOL: "socks5://warp:1080"
+      DEFAULT_MODEL: "deepseek"
+      AUTO_MODEL_FALLBACK: "true"
+      MAX_WAIT: "300s"
+      DIRECT_COOLDOWN: "2m"
+      MAX_CONCURRENCY: "1000"
+    mem_limit: 1024m
