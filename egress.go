@@ -67,8 +67,8 @@ func newTransport(proxy func(*http.Request) (*url.URL, error)) *http.Transport {
 			KeepAlive: 30 * time.Second,
 		}).DialContext,
 		ForceAttemptHTTP2:     true,
-		MaxIdleConns:          1024,
-		MaxIdleConnsPerHost:   512,
+		MaxIdleConns:          4096,
+		MaxIdleConnsPerHost:   1024,
 		IdleConnTimeout:       180 * time.Second,
 		TLSHandshakeTimeout:   25 * time.Second,
 		ResponseHeaderTimeout: 180 * time.Second, // không đặt Client.Timeout để stream dài không bị cắt

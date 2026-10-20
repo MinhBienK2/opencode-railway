@@ -9,6 +9,187 @@ services:
       - /dev/net/tun:/dev/net/tun
     ports:
       - "1080:1080"
+    mem_limit: 256m
+
+  warp2:
+    image: caomingjun/warp:latest
+    container_name: warp-proxy-2
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    ports:
+      - "1081:1080"
+    mem_limit: 256m
+
+  warp3:
+    image: caomingjun/warp:latest
+    container_name: warp-proxy-3
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    ports:
+      - "1082:1080"
+    mem_limit: 256m
+
+  warp4:
+    image: caomingjun/warp:latest
+    container_name: warp-proxy-4
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    ports:
+      - "1083:1080"
+    mem_limit: 256m
+
+  warp5:
+    image: caomingjun/warp:latest
+    container_name: warp-proxy-5
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    ports:
+      - "1084:1080"
+    mem_limit: 256m
+
+  warp6:
+    image: caomingjun/warp:latest
+    container_name: warp-proxy-6
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    ports:
+      - "1085:1080"
+    mem_limit: 256m
+
+  warp7:
+    image: caomingjun/warp:latest
+    container_name: warp-proxy-7
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    ports:
+      - "1086:1080"
+    mem_limit: 256m
+
+  warp8:
+    image: caomingjun/warp:latest
+    container_name: warp-proxy-8
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    ports:
+      - "1087:1080"
+    mem_limit: 256m
+
+  warp9:
+    image: caomingjun/warp:latest
+    container_name: warp-proxy-9
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    ports:
+      - "1088:1080"
+    mem_limit: 256m
+
+  warp10:
+    image: caomingjun/warp:latest
+    container_name: warp-proxy-10
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    ports:
+      - "1089:1080"
+    mem_limit: 256m
+
+  warp11:
+    image: caomingjun/warp:latest
+    container_name: warp-proxy-11
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    ports:
+      - "1090:1080"
+    mem_limit: 256m
+
+  warp12:
+    image: caomingjun/warp:latest
+    container_name: warp-proxy-12
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    ports:
+      - "1091:1080"
+    mem_limit: 256m
+
+  warp13:
+    image: caomingjun/warp:latest
+    container_name: warp-proxy-13
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    ports:
+      - "1092:1080"
+    mem_limit: 256m
+
+  warp14:
+    image: caomingjun/warp:latest
+    container_name: warp-proxy-14
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    ports:
+      - "1093:1080"
+    mem_limit: 256m
+
+  warp15:
+    image: caomingjun/warp:latest
+    container_name: warp-proxy-15
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    ports:
+      - "1094:1080"
+    mem_limit: 256m
+
+  warp16:
+    image: caomingjun/warp:latest
+    container_name: warp-proxy-16
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    ports:
+      - "1095:1080"
+    mem_limit: 256m
 
   gateway:
     build:
@@ -19,11 +200,26 @@ services:
     restart: unless-stopped
     depends_on:
       - warp
+      - warp2
+      - warp3
+      - warp4
+      - warp5
+      - warp6
+      - warp7
+      - warp8
+      - warp9
+      - warp10
+      - warp11
+      - warp12
+      - warp13
+      - warp14
+      - warp15
+      - warp16
     ports:
       - "8090:8080"
     environment:
       DISABLE_TOR: "true"
-      PROXY_POOL: "socks5://warp:1080"
+      PROXY_POOL: "socks5://warp:1080,socks5://warp2:1080,socks5://warp3:1080,socks5://warp4:1080,socks5://warp5:1080,socks5://warp6:1080,socks5://warp7:1080,socks5://warp8:1080,socks5://warp9:1080,socks5://warp10:1080,socks5://warp11:1080,socks5://warp12:1080,socks5://warp13:1080,socks5://warp14:1080,socks5://warp15:1080,socks5://warp16:1080"
       DEFAULT_MODEL: "deepseek"
       AUTO_MODEL_FALLBACK: "true"
       MAX_WAIT: "300s"

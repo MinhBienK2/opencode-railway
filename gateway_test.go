@@ -190,6 +190,40 @@ func TestAnthropicToOpenAI(t *testing.T) {
 	}
 }
 
+// omp/Claude Code gửi mức suy luận ở output_config.effort + thinking;
+// gateway phải map sang reasoning_effort của Chat Completions, và field
+// client-only (context_management, output_config) không được lọt lên upstream.
+func TestAnthropicReasoningEffortMapping(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{"omp adaptive high", `{"model":"m","thinking":{"type":"adaptive"},"output_config":{"effort":"high"}}`, "high"},
+		{"thinking effort fallback", `{"model":"m","thinking":{"type":"enabled","effort":"low"}}`, "low"},
+		{"thinking disabled", `{"model":"m","thinking":{"type":"disabled"},"output_config":{"effort":"high"}}`, ""},
+		{"no effort", `{"model":"m","thinking":{"type":"adaptive"}}`, ""},
+		{"invalid effort", `{"model":"m","output_config":{"effort":"turbo"}}`, ""},
+	}
+	for _, c := range cases {
+		var req map[string]any
+		if err := json.Unmarshal([]byte(c.raw), &req); err != nil {
+			t.Fatalf("%s: unmarshal: %v", c.name, err)
+		}
+		out := anthropicToOpenAI(req, "deepseek-v4.1-flash-free")
+		got, _ := out["reasoning_effort"].(string)
+		if got != c.want {
+			t.Errorf("%s: reasoning_effort = %q, want %q", c.name, got, c.want)
+		}
+		// Field client-only không được chuyển sang body upstream.
+		for _, k := range []string{"thinking", "context_management", "output_config"} {
+			if _, ok := out[k]; ok {
+				t.Errorf("%s: upstream body còn sót field %q", c.name, k)
+			}
+		}
+	}
+}
+
 func TestRemapStub(t *testing.T) {
 	tools := map[string]clientTool{
 		"Read": {name: "Read", props: map[string]bool{"file_path": true}},

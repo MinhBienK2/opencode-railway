@@ -32,7 +32,7 @@ var freeModelPool = []string{
 	"big-pickle",
 	"mimo-v2.6-flash-free",
 	"beam-free",
-	"space-bunny-free",
+	"minimax-m3.1-flash-free",
 	"longcat-2.5-preview-free",
 	"glm-5.3-flash-free",
 }
@@ -73,6 +73,8 @@ func resolveModelName(name string) (resolved string, isPool bool) {
 		return "cat-jam-free", false
 	case "space-bunny":
 		return "space-bunny-free", false
+	case "minimax", "minimax-m3.1", "minimax-m3.1-flash":
+		return "minimax-m3.1-flash-free", false
 	case "mimo", "mimo-v2.6-flash":
 		return "mimo-v2.6-flash-free", false
 	case "deepseek", "deepseek-v4.1-flash", "deepseek-v4.1", "deepseek-flash", "deepseek-chat", "deepseek-reasoner":
@@ -112,7 +114,7 @@ func resolveModelName(name string) (resolved string, isPool bool) {
 func applyFingerprint(body map[string]any, model string, inject bool, stubDesc string) {
 	body["stream"] = true
 	if !inject {
-		if strings.HasPrefix(model, "cat-jam") {
+		if strings.HasPrefix(model, "cat-jam") || strings.HasPrefix(model, "beam") || strings.HasPrefix(model, "space-bunny") || strings.HasPrefix(model, "glm") {
 			delete(body, "cache_control")
 		}
 		return
@@ -156,7 +158,7 @@ func applyFingerprint(body map[string]any, model string, inject bool, stubDesc s
 		}
 		body["tools"] = combined
 	}
-	if strings.HasPrefix(model, "cat-jam") {
+	if strings.HasPrefix(model, "cat-jam") || strings.HasPrefix(model, "beam") || strings.HasPrefix(model, "space-bunny") || strings.HasPrefix(model, "glm") {
 		delete(body, "cache_control")
 	}
 }
@@ -209,7 +211,10 @@ func readSSE(r io.Reader, fn func(payload string) error) error {
 		text := strings.TrimSpace(line)
 		if strings.HasPrefix(text, "data:") {
 			payload := strings.TrimSpace(strings.TrimPrefix(text, "data:"))
-			if payload != "" && payload != "[DONE]" {
+			if payload == "[DONE]" {
+				return nil
+			}
+			if payload != "" {
 				if ferr := fn(payload); ferr != nil {
 					return ferr
 				}

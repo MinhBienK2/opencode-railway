@@ -274,7 +274,38 @@ func anthropicToOpenAI(req map[string]any, model string) map[string]any {
 	if s, ok := req["stop_sequences"]; ok {
 		out["stop"] = s
 	}
+	// Suy luận: client Anthropic (Claude Code, omp) gửi mức suy luận ở
+	// output_config.effort (kèm thinking.effort) chứ không phải
+	// reasoning_effort của Chat Completions. Map sang reasoning_effort để
+	// upstream thực sự điều chỉnh độ sâu suy luận.
+	if effort := claudeReasoningEffort(req); effort != "" {
+		out["reasoning_effort"] = effort
+	}
 	return out
+}
+
+// claudeReasoningEffort trích mức suy luận từ body Anthropic Messages:
+// ưu tiên output_config.effort (nơi Claude Code/omp đặt --effort), sau đó
+// thinking.effort. Trả "" khi thinking bị tắt hoặc không có effort hợp lệ.
+func claudeReasoningEffort(req map[string]any) string {
+	th, _ := req["thinking"].(map[string]any)
+	if th != nil {
+		if t, _ := th["type"].(string); t == "disabled" {
+			return ""
+		}
+	}
+	effort := ""
+	if oc, ok := req["output_config"].(map[string]any); ok {
+		effort, _ = oc["effort"].(string)
+	}
+	if effort == "" && th != nil {
+		effort, _ = th["effort"].(string)
+	}
+	switch strings.ToLower(strings.TrimSpace(effort)) {
+	case "minimal", "low", "medium", "high", "xhigh", "max":
+		return strings.ToLower(strings.TrimSpace(effort))
+	}
+	return ""
 }
 
 func estimateTokens(v any) int {
