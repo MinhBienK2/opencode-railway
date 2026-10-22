@@ -27,14 +27,13 @@ const (
 )
 
 var freeModelPool = []string{
+	"glm-5.3-flash-free",
+	"minimax-m3.1-flash-free",
 	"deepseek-v4.1-flash-free",
 	"nemotron-3.5-lightning-free",
 	"big-pickle",
 	"mimo-v2.6-flash-free",
 	"beam-free",
-	"minimax-m3.1-flash-free",
-	"longcat-2.5-preview-free",
-	"glm-5.3-flash-free",
 }
 
 var (
