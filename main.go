@@ -640,19 +640,125 @@ func systemoneHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 var modelList = []struct{ id, owner string }{
-	{"auto-free", "auto-dispatcher"}, {"auto", "auto-dispatcher"},
-	{"nemotron-3.5-lightning", "opencode"}, {"big-pickle", "opencode"}, {"cat-jam", "opencode"},
-	{"space-bunny", "opencode"}, {"mimo-v2.6-flash", "opencode"}, {"deepseek", "opencode"},
-	{"deepseek-v4.1-flash", "opencode"}, {"jev-1.13", "typesafe"}, {"step-5-preview", "opencode"},
-	{"longcat-2.5-preview", "opencode"},
+	{"auto-free", "auto-dispatcher"},
+	{"auto", "auto-dispatcher"},
+	{"deepseek", "deepseek"},
+	{"deepseek-v4.1-flash", "deepseek"},
+	{"glm-5.3-flash", "zhipu"},
+	{"glm", "zhipu"},
+	{"nemotron-3.5-lightning", "nvidia"},
+	{"nemotron", "nvidia"},
+	{"big-pickle", "opencode"},
+	{"mimo-v2.6-flash", "xiaomi"},
+	{"mimo", "xiaomi"},
+	{"beam", "opencode"},
+	{"nemotron-3.5-super-vl", "nvidia"},
+	{"jev-1.13", "typesafe"},
 }
 
-// modelObj đồng thời hợp lệ với định dạng OpenAI (object/owned_by) và Anthropic (type/display_name/created_at).
 func modelObj(id, owner string) map[string]any {
-	return map[string]any{"id": id, "object": "model", "owned_by": owner, "created": 1735689600,
-		"type": "model", "display_name": id, "created_at": "2025-01-01T00:00:00Z"}
-}
+	clean := strings.ToLower(strings.TrimSpace(id))
+	clean = strings.TrimSuffix(clean, "-free")
 
+	name := id
+	desc := "OpenCode catalog model " + id
+	contextWin := 128000
+	maxOutput := 8192
+	inputMods := []string{"text"}
+	vision := false
+	reasoning := true
+	efforts := []string{"minimal", "low", "medium", "high", "max"}
+
+	switch clean {
+	case "deepseek", "deepseek-v4.1", "deepseek-v4.1-flash":
+		name = "DeepSeek V4.1 Flash"
+		desc = "Top-tier code generation & reasoning model with 1M context window and adaptive thinking"
+		contextWin = 1048576
+		maxOutput = 65536
+	case "glm", "glm-5.3", "glm-5.3-flash":
+		name = "GLM 5.3 Flash"
+		desc = "Fastest response time and highest concurrency throughput among free models"
+		contextWin = 128000
+		maxOutput = 65536
+	case "nemotron", "nemotron-3.5-lightning":
+		name = "Nemotron 3.5 Lightning"
+		desc = "Low-latency lightweight reasoning model with ultra-consistent tail latency"
+		contextWin = 128000
+		maxOutput = 32000
+	case "big-pickle":
+		name = "Big Pickle"
+		desc = "OpenCode internal zero-cost general-purpose model with high concurrency resilience"
+		contextWin = 200000
+		maxOutput = 64000
+	case "mimo", "mimo-v2.6", "mimo-v2.6-flash":
+		name = "Mimo V2.6 Flash"
+		desc = "1M long-context flash reasoning model"
+		contextWin = 1000000
+		maxOutput = 65536
+	case "beam":
+		name = "Beam"
+		desc = "Focused logical deduction and analytical processing model"
+		contextWin = 128000
+		maxOutput = 32000
+		efforts = []string{"low", "medium", "high", "max"}
+	case "nemotron-3.5-super-vl":
+		name = "Nemotron 3.5 Super VL"
+		desc = "Vision-Language multimodal model supporting image analysis and optical understanding"
+		contextWin = 128000
+		maxOutput = 32000
+		inputMods = []string{"text", "image"}
+		vision = true
+	case "jev", "jev-1.13":
+		name = "TypeSafe JEV 1.13"
+		desc = "Specialized model for TypeSafe System One binary classification (/v1/systemone)"
+		contextWin = 32768
+		maxOutput = 8192
+		reasoning = false
+		efforts = nil
+	case "auto", "auto-free":
+		name = "Auto Free Dispatcher"
+		desc = "Automated load-balanced proxy routing across the best available free models"
+		contextWin = 1048576
+		maxOutput = 65536
+	default:
+		if strings.Contains(clean, "vision") || strings.Contains(clean, "vl") || strings.Contains(clean, "image") {
+			inputMods = []string{"text", "image"}
+			vision = true
+		}
+	}
+
+	return map[string]any{
+		"id":                 id,
+		"object":             "model",
+		"created":            1735689600,
+		"created_at":         "2025-01-01T00:00:00Z",
+		"owned_by":           owner,
+		"type":               "model",
+		"display_name":       name,
+		"name":               name,
+		"description":        desc,
+		"context_window":     contextWin,
+		"max_output_tokens":  maxOutput,
+		"input_modalities":   inputMods,
+		"output_modalities":  []string{"text"},
+		"capabilities": map[string]any{
+			"vision":    vision,
+			"tools":     clean != "jev" && clean != "jev-1.13",
+			"reasoning": reasoning,
+		},
+		"thinking": map[string]any{
+			"supported":     reasoning,
+			"mode":          "anthropic-adaptive",
+			"default_level": "high",
+			"efforts":       efforts,
+		},
+		"pricing": map[string]any{
+			"input":  0,
+			"output": 0,
+			"free":   true,
+		},
+	}
+}
 func modelsHandler(w http.ResponseWriter, r *http.Request) {
 	setCORS(w)
 	if r.Method == http.MethodOptions {
