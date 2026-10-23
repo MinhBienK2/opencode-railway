@@ -890,12 +890,18 @@ func main() {
 		mode = "direct trước, Tor khi bị 429"
 	}
 	switch {
+	case cfg.DisableTor:
+		mode = fmt.Sprintf("%d Proxies WARP (Tor đã vô hiệu hóa)", len(mgr.snapshot())-1)
 	case cfg.ForceTor:
 		mode = "chỉ Tor (FORCE_TOR)"
 	case !torAvailable && len(mgr.snapshot()) == 1:
 		mode = "chỉ direct"
 	}
-	log.Printf("Egress: %s | TOR_WARM=%d TOR_MAX=%d (tự thêm daemon khi tải > %d/daemon, tắt sau %v nhàn rỗi)", mode, cfg.TorWarm, cfg.TorMax, cfg.TorLoad, cfg.TorIdleStop)
+	if cfg.DisableTor {
+		log.Printf("Egress: %s", mode)
+	} else {
+		log.Printf("Egress: %s | TOR_WARM=%d TOR_MAX=%d (tự thêm daemon khi tải > %d/daemon, tắt sau %v nhàn rỗi)", mode, cfg.TorWarm, cfg.TorMax, cfg.TorLoad, cfg.TorIdleStop)
+	}
 	go mgr.warmDirect()
 	if torAvailable {
 		go mgr.warmTor()

@@ -14,23 +14,28 @@
 # khởi động lại sẽ tạo lại tunnel + DNS proxy và trở lại healthy.
 set -u
 
-CONTAINERS=$(docker ps --filter "name=warp-proxy" --format '{{.Names}}')
+CONTAINERS=$(docker ps -a --filter "name=warp-proxy" --format '{{.Names}}')
 [ -z "$CONTAINERS" ] && exit 0
 
 fixed=0
 for c in $CONTAINERS; do
-    # Bỏ qua container đang chạy: "healthy" hoặc "health: starting".
     state=$(docker inspect -f '{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$c" 2>/dev/null)
     status="${state%%|*}"
     health="${state##*|}"
-    [ "$status" = "running" ] || continue
+
+    if [ "$status" != "running" ]; then
+        echo "[warp-watch] $c status=$status -> start"
+        docker start "$c" >/dev/null 2>&1 && fixed=$((fixed + 1))
+        continue
+    fi
+
     case "$health" in
         healthy) continue ;;
         starting) continue ;;
     esac
     echo "[warp-watch] $c health=$health -> restart"
     docker restart "$c" >/dev/null 2>&1 && fixed=$((fixed + 1))
-    sleep 10
+    sleep 5
 done
 
 [ "$fixed" -gt 0 ] && echo "[warp-watch] restarted $fixed container(s)"
