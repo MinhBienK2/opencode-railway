@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -26,15 +27,112 @@ const (
 	baseInfURL  = "https://opencode.ai/zen/v1"
 )
 
-var freeModelPool = []string{
-	"glm-5.3-flash-free",
-	"minimax-m3.1-flash-free",
-	"deepseek-v4.1-flash-free",
-	"nemotron-3.5-lightning-free",
-	"big-pickle",
-	"mimo-v2.6-flash-free",
-	"beam-free",
+var (
+	poolMu        sync.RWMutex
+	freeModelPool = []string{
+		"glm-5.3-flash-free",
+		"deepseek-v4.1-flash-free",
+		"nemotron-3.5-lightning-free",
+		"big-pickle",
+		"mimo-v2.6-flash-free",
+		"beam-free",
+	}
+)
+
+func prunePool(model string) {
+	poolMu.Lock()
+	defer poolMu.Unlock()
+	var next []string
+	deadBase := strings.TrimSuffix(model, "-free")
+	for _, m := range freeModelPool {
+		if m != model && strings.TrimSuffix(m, "-free") != deadBase {
+			next = append(next, m)
+		}
+	}
+	if len(next) > 0 {
+		freeModelPool = next
+	}
 }
+func startCatalogSync(ctx context.Context) {
+	// Đồng bộ ngay khi khởi động
+	syncCatalog()
+	ticker := time.NewTicker(10 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			syncCatalog()
+		}
+	}
+}
+
+func syncCatalog() {
+	req, err := http.NewRequest("GET", "https://opencode.ai/zen/v1/models", nil)
+	if err != nil {
+		return
+	}
+	req.Header.Set("Authorization", "Bearer public")
+	req.Header.Set("User-Agent", "opencode/1.19.4")
+	var client *http.Client
+	if mgr != nil {
+		snap := mgr.snapshot()
+		if len(snap) > 0 {
+			client = snap[0].client.Load()
+		}
+	}
+	if client == nil {
+		client = &http.Client{Timeout: 15 * time.Second}
+	}
+	resp, err := client.Do(req)
+	if err != nil || resp.StatusCode != 200 {
+		return
+	}
+	defer resp.Body.Close()
+	var env struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if json.NewDecoder(resp.Body).Decode(&env) != nil || len(env.Data) == 0 {
+		return
+	}
+	active := map[string]bool{}
+	for _, m := range env.Data {
+		if strings.HasSuffix(m.ID, "-free") || m.ID == "big-pickle" {
+			active[m.ID] = true
+		}
+	}
+	poolMu.Lock()
+	defer poolMu.Unlock()
+	var live []string
+	for _, m := range freeModelPool {
+		if active[m] {
+			live = append(live, m)
+		}
+	}
+	for m := range active {
+		if m == "jev-1.13-free" || m == "flint-40b-free" {
+			continue
+		}
+		found := false
+		for _, p := range live {
+			if p == m {
+				found = true
+				break
+			}
+		}
+		if !found {
+			live = append(live, m)
+		}
+	}
+	if len(live) > 0 {
+		freeModelPool = live
+		log.Printf("[CatalogSync] Tự động đồng bộ pool theo upstream: %v", live)
+	}
+}
+
 
 var (
 	cfg            Config
@@ -60,6 +158,11 @@ func isAutoModel(name string) bool {
 
 func resolveModelName(name string) (resolved string, isPool bool) {
 	clean := strings.ToLower(strings.TrimSpace(name))
+	if rep := getDynamicAlias(clean); rep != "" {
+		clean = rep
+	}
+	poolMu.RLock()
+	defer poolMu.RUnlock()
 	if isAutoModel(clean) {
 		return freeModelPool[int(atomic.AddUint32(&poolIndex, 1))%len(freeModelPool)], true
 	}
@@ -72,8 +175,8 @@ func resolveModelName(name string) (resolved string, isPool bool) {
 		return "cat-jam-free", false
 	case "space-bunny":
 		return "space-bunny-free", false
-	case "minimax", "minimax-m3.1", "minimax-m3.1-flash":
-		return "minimax-m3.1-flash-free", false
+	case "minimax", "minimax-m3.1", "minimax-m3.1-flash", "minimax-m3.1-flash-free":
+		return "deepseek-v4.1-flash-free", false
 	case "mimo", "mimo-v2.6-flash":
 		return "mimo-v2.6-flash-free", false
 	case "deepseek", "deepseek-v4.1-flash", "deepseek-v4.1", "deepseek-flash", "deepseek-chat", "deepseek-reasoner":
@@ -693,6 +796,7 @@ func main() {
 		go mgr.reapIdleTor()
 		go mgr.autoscaleTor()
 	}
+	go startCatalogSync(ctx)
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,

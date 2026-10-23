@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -257,7 +258,83 @@ func normalizeLastError(last *gwError) *gwError {
 	}
 	return last
 }
+var (
+	dynamicAliasMu sync.RWMutex
+	dynamicAliases = map[string]string{}
+)
+
+func registerDynamicAlias(deprecated, replacement string) {
+	if deprecated == "" || replacement == "" || deprecated == replacement {
+		return
+	}
+	dynamicAliasMu.Lock()
+	defer dynamicAliasMu.Unlock()
+	dynamicAliases[deprecated] = replacement
+	dBase := strings.TrimSuffix(deprecated, "-free")
+	rBase := strings.TrimSuffix(replacement, "-free")
+	dynamicAliases[dBase] = rBase
+	dynamicAliases[dBase+"-free"] = rBase
+}
+
+func getDynamicAlias(model string) string {
+	dynamicAliasMu.RLock()
+	defer dynamicAliasMu.RUnlock()
+	return dynamicAliases[model]
+}
+
+func parseReplacement(body []byte) string {
+	if len(body) == 0 {
+		return ""
+	}
+	var env struct {
+		Type  string `json:"type"`
+		Error struct {
+			Type    string `json:"type"`
+			Message string `json:"message"`
+		} `json:"error"`
+		Metadata struct {
+			Replacement string `json:"replacement"`
+		} `json:"metadata"`
+	}
+	if json.Unmarshal(body, &env) == nil {
+		if env.Metadata.Replacement != "" {
+			return env.Metadata.Replacement
+		}
+		if env.Error.Message != "" {
+			idx := strings.Index(env.Error.Message, "Use ")
+			if idx >= 0 {
+				tail := env.Error.Message[idx+4:]
+				if sp := strings.Index(tail, " instead"); sp > 0 {
+					return strings.TrimSpace(tail[:sp])
+				}
+			}
+		}
+	}
+	return ""
+}
+
+func isModelDeprecated(status int, body []byte) bool {
+	if status == http.StatusGone {
+		return true
+	}
+	if len(body) == 0 {
+		return false
+	}
+	return bytes.Contains(body, []byte("ModelDeprecated")) || bytes.Contains(body, []byte("has been deprecated"))
+}
+
+func isModelParamError(body []byte) bool {
+	if len(body) == 0 {
+		return false
+	}
+	return bytes.Contains(body, []byte("unsupported_value")) ||
+		bytes.Contains(body, []byte("unsupported_parameter")) ||
+		bytes.Contains(body, []byte("Endpoint is unavailable"))
+}
+
 func nextModelInPool(current string) string {
+	poolMu.RLock()
+	defer poolMu.RUnlock()
 	n := len(freeModelPool)
 	for i, m := range freeModelPool {
 		if m == current {
@@ -428,6 +505,64 @@ func forward(ctx context.Context, model string, isPool bool, url, accept, key st
 				}
 			}
 			continue
+		case resp.StatusCode == http.StatusGone || (resp.StatusCode == http.StatusBadRequest && isModelDeprecated(resp.StatusCode, nil)):
+			snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+			resp.Body.Close()
+			cancel()
+			e.inflight.Add(-1)
+			replacement := parseReplacement(snippet)
+			if replacement == "" {
+				replacement = nextModelInPool(currentModel)
+			}
+			log.Printf("[Router] model=%s bị 410/ModelDeprecated! Tự động chuyển vĩnh viễn sang model=%s", currentModel, replacement)
+			registerDynamicAlias(currentModel, replacement)
+			prunePool(currentModel)
+			if replacement != currentModel && replacement != "" {
+				currentModel = replacement
+				modelFailures = 0
+				avoidDaemons = nil
+			}
+			continue
+
+		case resp.StatusCode == http.StatusBadRequest:
+			snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+			if isModelDeprecated(resp.StatusCode, snippet) {
+				resp.Body.Close()
+				cancel()
+				e.inflight.Add(-1)
+				replacement := parseReplacement(snippet)
+				if replacement == "" {
+					replacement = nextModelInPool(currentModel)
+				}
+				log.Printf("[Router] model=%s báo ModelDeprecated (400)! Tự động chuyển sang model=%s", currentModel, replacement)
+				registerDynamicAlias(currentModel, replacement)
+				prunePool(currentModel)
+				if replacement != currentModel && replacement != "" {
+					currentModel = replacement
+					modelFailures = 0
+					avoidDaemons = nil
+				}
+				continue
+			}
+			if isModelParamError(snippet) && isFreeModelInPool(currentModel) {
+				resp.Body.Close()
+				cancel()
+				e.inflight.Add(-1)
+				e.errs.Add(1)
+				log.Printf("[Router] model=%s bị lỗi tham số hoặc backend (400), tự động failover sang model khác: %s", currentModel, string(snippet))
+				next := nextModelInPool(currentModel)
+				if next != currentModel {
+					currentModel = next
+					modelFailures = 0
+					avoidDaemons = nil
+				}
+				continue
+			}
+			resp.Body.Close()
+			cancel()
+			e.inflight.Add(-1)
+			last = &gwError{status: http.StatusBadRequest, typ: "invalid_request_error", msg: "Upstream HTTP 400: " + strings.TrimSpace(string(snippet))}
+			return nil, last
 		}
 
 		if resp.StatusCode == http.StatusOK {
