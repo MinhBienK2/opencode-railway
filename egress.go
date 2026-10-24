@@ -254,6 +254,12 @@ func (e *Egress) clear(model string) {
 	delete(e.cool, model)
 	e.mu.Unlock()
 }
+func (e *Egress) clearAll() {
+	e.mu.Lock()
+	e.cool = make(map[string]*coolState)
+	e.mu.Unlock()
+}
+
 
 // transient: lỗi tạm thời (502, lỗi mạng), nghỉ ngắn, không tăng strike.
 func (e *Egress) transient(model string, d time.Duration) {
@@ -482,6 +488,7 @@ func splitList(s string) []string {
 }
 var (
 	renewMu       sync.Mutex
+	isRenewing    atomic.Bool
 	lastRenewTime = map[string]time.Time{}
 )
 
@@ -496,14 +503,23 @@ func renewWarpProxy(egressName string) {
 		return
 	}
 
+	// Chỉ cho phép 1 container đổi IP tại 1 thời điểm để 15 container còn lại luôn phục vụ 100% traffic
+	if !isRenewing.CompareAndSwap(false, true) {
+		return
+	}
+
 	renewMu.Lock()
-	if t, ok := lastRenewTime[container]; ok && time.Since(t) < 30*time.Second {
+	if t, ok := lastRenewTime[container]; ok && time.Since(t) < 60*time.Second {
 		renewMu.Unlock()
+		isRenewing.Store(false)
 		return
 	}
 	lastRenewTime[container] = time.Now()
 	renewMu.Unlock()
 
+	time.AfterFunc(10*time.Second, func() {
+		isRenewing.Store(false)
+	})
 	go func() {
 		log.Printf("[WARP-Renew] Egress %s (%s) bị 429 quota cứng -> Tự động khởi động lại container để lấy IP Cloudflare mới...", egressName, container)
 		tr := &http.Transport{
@@ -519,6 +535,14 @@ func renewWarpProxy(egressName string) {
 		}
 		resp.Body.Close()
 		log.Printf("[WARP-Renew] %s đã restart thành công, IP Cloudflare WARP đã được làm mới!", container)
+		if mgr != nil {
+			for _, eg := range mgr.snapshot() {
+				if eg.Name == egressName {
+					eg.clearAll()
+					break
+				}
+			}
+		}
 	}()
 }
 
@@ -632,7 +656,7 @@ func (m *Manager) routeAvoid(ctx context.Context, model string, isPool bool, dea
 			if e := m.pickAvoid(model, avoid...); e != nil {
 				return model, e, nil
 			}
-			if cfg.AutoModelFallback {
+			if cfg.AutoModelFallback && isFreeModelInPool(model) {
 				n := len(freeModelPool)
 				start := int(atomic.AddUint32(&poolIndex, 1))
 				for i := range n {
