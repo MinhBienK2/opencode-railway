@@ -481,7 +481,7 @@ func messagesHandler(w http.ResponseWriter, r *http.Request) {
 		oa["model"] = m
 		oa["stream_options"] = map[string]any{"include_usage": true}
 		applyFingerprint(oa, m, cfg.InjectToolsAnthropic, stubDescription)
-		b, _ := json.Marshal(oa)
+		b, _ := jsonMarshalNoEscape(oa)
 		return b
 	})
 	if gerr != nil {

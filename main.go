@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"bufio"
 	"context"
 	"encoding/json"
@@ -229,10 +230,10 @@ func applyFingerprint(body map[string]any, model string, inject bool, stubDesc s
 		return name
 	}
 	mandatory := []map[string]any{
-		{"type": "function", "function": map[string]any{"name": "bash", "description": d("bash"), "parameters": map[string]any{"type": "object", "properties": map[string]any{"command": map[string]any{"type": "string"}}, "required": []string{"command"}}}},
-		{"type": "function", "function": map[string]any{"name": "glob", "description": d("glob"), "parameters": map[string]any{"type": "object", "properties": map[string]any{"pattern": map[string]any{"type": "string"}}, "required": []string{"pattern"}}}},
-		{"type": "function", "function": map[string]any{"name": "grep", "description": d("grep"), "parameters": map[string]any{"type": "object", "properties": map[string]any{"pattern": map[string]any{"type": "string"}}, "required": []string{"pattern"}}}},
-		{"type": "function", "function": map[string]any{"name": "read", "description": d("read"), "parameters": map[string]any{"type": "object", "properties": map[string]any{"filePath": map[string]any{"type": "string"}}, "required": []string{"filePath"}}}},
+		{"type": "function", "function": map[string]any{"name": "bash", "description": d("bash"), "strict": false, "parameters": map[string]any{"type": "object", "properties": map[string]any{"command": map[string]any{"type": "string"}}, "required": []string{"command"}}}},
+		{"type": "function", "function": map[string]any{"name": "glob", "description": d("glob"), "strict": false, "parameters": map[string]any{"type": "object", "properties": map[string]any{"pattern": map[string]any{"type": "string"}}, "required": []string{"pattern"}}}},
+		{"type": "function", "function": map[string]any{"name": "grep", "description": d("grep"), "strict": false, "parameters": map[string]any{"type": "object", "properties": map[string]any{"pattern": map[string]any{"type": "string"}}, "required": []string{"pattern"}}}},
+		{"type": "function", "function": map[string]any{"name": "read", "description": d("read"), "strict": false, "parameters": map[string]any{"type": "object", "properties": map[string]any{"filePath": map[string]any{"type": "string"}}, "required": []string{"filePath"}}}},
 	}
 
 	raw, has := body["tools"]
@@ -264,6 +265,16 @@ func applyFingerprint(body map[string]any, model string, inject bool, stubDesc s
 		delete(body, "cache_control")
 	}
 }
+func jsonMarshalNoEscape(v any) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	return bytes.TrimSuffix(buf.Bytes(), []byte("\n")), nil
+}
+
 
 func setCORS(w http.ResponseWriter) {
 	if cfg.CORSOrigin == "" {
@@ -518,7 +529,7 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
 	up, gerr := forward(r.Context(), target, isPool, infURL+"/chat/completions", "*/*", sessionKey(r, reqData), func(m string) []byte {
 		reqData["model"] = m
 		applyFingerprint(reqData, m, true, stubDescription)
-		b, _ := json.Marshal(reqData)
+		b, _ := jsonMarshalNoEscape(reqData)
 		return b
 	})
 	if gerr != nil {

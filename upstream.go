@@ -158,7 +158,7 @@ func setUpstreamHeaders(req *http.Request, accept, key string) {
 	}
 	req.Header.Set("Authorization", "Bearer public")
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "opencode/1.19.3")
+	req.Header.Set("User-Agent", "opencode/2.1.1")
 	req.Header.Set("x-opencode-client", "cli")
 	req.Header.Set("x-opencode-project", proj)
 	req.Header.Set("x-opencode-request", newRequestID())
@@ -455,7 +455,7 @@ func forward(ctx context.Context, model string, isPool bool, url, accept, key st
 			if modelFailures >= 3 && isFreeModelInPool(currentModel) {
 				next := nextModelInPool(currentModel)
 				if next != currentModel {
-					log.Printf("[Router] model=%s bị 429 liên tiếp, tự động failover sang model=%s", currentModel, next)
+					log.Printf("[Router] model=%s bị 429, tự động chuyển ngay sang model=%s", currentModel, next)
 					currentModel = next
 					modelFailures = 0
 					avoidDaemons = nil

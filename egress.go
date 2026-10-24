@@ -641,6 +641,20 @@ func (m *Manager) route(ctx context.Context, model string, isPool bool, deadline
 	return m.routeAvoid(ctx, model, isPool, deadline)
 }
 
+func (m *Manager) triggerEmergencyWarpRenew() {
+	for _, eg := range m.snapshot() {
+		if eg.Kind == kindProxy && strings.HasPrefix(eg.Name, "proxy") {
+			eg.mu.Lock()
+			hasCool := len(eg.cool) > 0
+			eg.mu.Unlock()
+			if hasCool {
+				renewWarpProxy(eg.Name)
+				return
+			}
+		}
+	}
+}
+
 func (m *Manager) routeAvoid(ctx context.Context, model string, isPool bool, deadline time.Time, avoid ...string) (string, *Egress, *gwError) {
 	for {
 		if isPool {
@@ -677,8 +691,9 @@ func (m *Manager) routeAvoid(ctx context.Context, model string, isPool bool, dea
 		if isPool || (cfg.AutoModelFallback && isFreeModelInPool(model)) {
 			models = freeModelPool
 		}
-		// Không có Tor nào đang/sắp chạy và đường nhanh nhất còn khoá lâu hơn thời gian chờ cho phép: báo ngay, đừng treo client.
-		if !m.canWaitForTor() && !m.anyUsableWithin(models, time.Until(deadline)) {
+		// Khi chỉ có 1 đường direct duy nhất (không có proxy pool để renew) và không có Tor: báo 429 nhanh.
+		// Khi CÓ proxy pool (16-24 WARP proxies): KHÔNG ĐƯỢC NUỐT/VỨT BỎ REQUEST, kích hoạt renew IP khẩn cấp và giữ request chờ đường mới!
+		if !m.canWaitForTor() && len(m.snapshot()) <= 1 && !m.anyUsableWithin(models, time.Until(deadline)) {
 			return "", nil, &gwError{
 				status:     http.StatusTooManyRequests,
 				typ:        "rate_limit_error",
@@ -686,19 +701,20 @@ func (m *Manager) routeAvoid(ctx context.Context, model string, isPool bool, dea
 				retryAfter: m.soonest(models),
 			}
 		}
-
+		m.triggerEmergencyWarpRenew()
+		// 2. Giữ request trong hàng đợi nội bộ, liên tục kiểm tra proxy vừa được renew cho đến khi có đường sống hoặc hết deadline (MaxWait 300s).
 		if time.Now().After(deadline) {
 			return "", nil, &gwError{
 				status:     http.StatusTooManyRequests,
 				typ:        "rate_limit_error",
-				msg:        "All egress paths are rate limited for this model. Retry later.",
+				msg:        "All egress paths are rate limited. Max wait exceeded.",
 				retryAfter: m.soonest(models),
 			}
 		}
 		select {
 		case <-ctx.Done():
 			return "", nil, &gwError{status: 499, typ: "client_closed", msg: "client closed request"}
-		case <-time.After(200 * time.Millisecond):
+		case <-time.After(300 * time.Millisecond):
 		}
 	}
 }

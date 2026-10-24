@@ -222,6 +222,7 @@ services:
     environment:
       DISABLE_TOR: "true"
       PROXY_POOL: "socks5://warp:1080,socks5://warp2:1080,socks5://warp3:1080,socks5://warp4:1080,socks5://warp5:1080,socks5://warp6:1080,socks5://warp7:1080,socks5://warp8:1080,socks5://warp9:1080,socks5://warp10:1080,socks5://warp11:1080,socks5://warp12:1080,socks5://warp13:1080,socks5://warp14:1080,socks5://warp15:1080,socks5://warp16:1080"
+      MAX_ATTEMPTS: "4"
       DEFAULT_MODEL: "deepseek"
       AUTO_MODEL_FALLBACK: "true"
       MAX_WAIT: "300s"
