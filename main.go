@@ -638,6 +638,37 @@ func systemoneHandler(w http.ResponseWriter, r *http.Request) {
 	_, _ = io.Copy(w, up.resp.Body)
 	logReq("systemone", "json", up, t0, up.ttfb)
 }
+func capacityHandler(w http.ResponseWriter, r *http.Request) {
+	setCORS(w)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	snap := mgr.snapshot()
+	proxiesCount := len(snap) - 1
+	if proxiesCount < 0 {
+		proxiesCount = 0
+	}
+	out, _ := json.Marshal(map[string]any{
+		"object":        "systemone_capacity",
+		"endpoint":      "/v1/systemone",
+		"measured_env":  "Cloudflare WARP 16x cluster -> opencode.ai/zen",
+		"measured_on":   "2026-10-24",
+		"gate_capacity": cfg.MaxConcurrency,
+		"state": map[string]any{
+			"egress_pool_size": proxiesCount,
+			"gate_capacity":    cfg.MaxConcurrency,
+			"in_flight":        inflightTotal.Load(),
+		},
+		"usage": map[string]any{
+			"recommended_in_flight": cfg.MaxConcurrency,
+			"why":                   "Được điều phối tự động bởi scoring load balancer trên 16 proxy WARP độc lập.",
+		},
+	})
+	_, _ = w.Write(out)
+}
+
 
 var modelList = []struct{ id, owner string }{
 	{"auto-free", "auto-dispatcher"},
@@ -843,6 +874,7 @@ func buildMux() *http.ServeMux {
 	mux.HandleFunc("/v1/responses", grd.wrap(responsesHandler, true))
 	mux.HandleFunc("/v1/completions", grd.wrap(completionsHandler, true))
 	mux.HandleFunc("/v1/systemone", grd.wrap(systemoneHandler, true))
+	mux.HandleFunc("/v1/systemone/capacity", capacityHandler)
 	mux.HandleFunc("/v1/messages/count_tokens", grd.wrap(countTokensHandler, false))
 	mux.HandleFunc("/v1/models", grd.wrap(modelsHandler, false))
 	mux.HandleFunc("/v1/models/", grd.wrap(modelsHandler, false))

@@ -441,6 +441,9 @@ func forward(ctx context.Context, model string, isPool bool, url, accept, key st
 			}
 			if e.Kind == kindProxy {
 				mgr.refreshRotatingProxy(e)
+				if bytes.Contains(snippet, []byte("FreeUsageLimitError")) || bytes.Contains(snippet, []byte("Free usage limit reached")) || ra > 30*time.Minute {
+					renewWarpProxy(e.Name)
+				}
 			}
 			e.rotate(gen)
 			avoidDaemons = appendAvoid(avoidDaemons, e.daemon)

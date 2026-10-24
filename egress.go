@@ -480,6 +480,48 @@ func splitList(s string) []string {
 	}
 	return out
 }
+var (
+	renewMu       sync.Mutex
+	lastRenewTime = map[string]time.Time{}
+)
+
+func renewWarpProxy(egressName string) {
+	var container string
+	if egressName == "proxy1" {
+		container = "warp-proxy"
+	} else if strings.HasPrefix(egressName, "proxy") {
+		num := strings.TrimPrefix(egressName, "proxy")
+		container = "warp-proxy-" + num
+	} else {
+		return
+	}
+
+	renewMu.Lock()
+	if t, ok := lastRenewTime[container]; ok && time.Since(t) < 30*time.Second {
+		renewMu.Unlock()
+		return
+	}
+	lastRenewTime[container] = time.Now()
+	renewMu.Unlock()
+
+	go func() {
+		log.Printf("[WARP-Renew] Egress %s (%s) bị 429 quota cứng -> Tự động khởi động lại container để lấy IP Cloudflare mới...", egressName, container)
+		tr := &http.Transport{
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				return net.Dial("unix", "/var/run/docker.sock")
+			},
+		}
+		client := &http.Client{Transport: tr, Timeout: 15 * time.Second}
+		resp, err := client.Post("http://localhost/containers/"+container+"/restart", "application/json", nil)
+		if err != nil {
+			log.Printf("[WARP-Renew] Không gọi được docker restart qua socket: %v", err)
+			return
+		}
+		resp.Body.Close()
+		log.Printf("[WARP-Renew] %s đã restart thành công, IP Cloudflare WARP đã được làm mới!", container)
+	}()
+}
+
 
 // pick chọn egress cho model (cache của upstream theo prefix chứ không theo IP/session nên không cần gắn hội thoại với egress): mặc định Tor/proxy trước (PREFER_DIRECT=true thì direct trước); hết thì ưu tiên egress Tor đã phục vụ hội thoại này (giữ cache) nếu nó còn khỏe,
 // sau đó Tor/proxy khỏe nhất/rảnh nhất. nil nếu chưa có cái nào dùng được.
