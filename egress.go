@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net"
@@ -36,6 +37,10 @@ type Egress struct {
 	Kind      string
 	daemon    string // tên daemon ("tor-1", "tor-2", "direct"...)
 	canRotate bool // Tor: đổi được exit bằng cách đổi thông tin xác thực SOCKS (IsolateSOCKSAuth)
+	tier       int
+	refreshURL string
+	expired    atomic.Bool
+	lastRotate time.Time
 
 	client atomic.Pointer[http.Client]
 	ready  atomic.Bool
@@ -424,7 +429,7 @@ func (m *Manager) add(e *Egress) {
 
 // addStatic nạp các proxy khai báo sẵn: TOR_INSTANCES (host:socks, phần :control nếu có sẽ bị bỏ qua) và PROXY_POOL (URL).
 // addStatic nạp các proxy khai báo sẵn: TOR_INSTANCES (host:socks) và PROXY_POOL (URL).
-func (m *Manager) addStatic(torInstances, proxyPool string) {
+func (m *Manager) addStatic(torInstances, proxyPool, resProxies, resRefresh string) {
 	if !cfg.DisableTor {
 		for i, item := range splitList(torInstances) {
 			parts := strings.Split(item, ":")
@@ -437,6 +442,27 @@ func (m *Manager) addStatic(torInstances, proxyPool string) {
 			}
 		}
 	}
+	// Tier 1: Proxy dân cư xoay (Residential Proxies)
+	resList := splitList(resProxies)
+	refreshList := splitList(resRefresh)
+	for i, p := range resList {
+		u, err := url.Parse(p)
+		if err != nil {
+			log.Printf("[ProxyXoay] URL proxy không hợp lệ %q: %v", p, err)
+			continue
+		}
+		e := newEgress(fmt.Sprintf("res%d", i+1), kindProxy, http.ProxyURL(u))
+		e.tier = 1
+		e.daemon = fmt.Sprintf("res%d", i+1)
+		if i < len(refreshList) {
+			e.refreshURL = refreshList[i]
+		}
+		e.ready.Store(true)
+		m.add(e)
+		log.Printf("[ProxyXoay] Tier 1 nạp proxy dân cư: %s (%s)", e.Name, p)
+	}
+
+	// Tier 2: Cụm proxy WARP
 	for i, p := range splitList(proxyPool) {
 		u, err := url.Parse(p)
 		if err != nil {
@@ -444,11 +470,74 @@ func (m *Manager) addStatic(torInstances, proxyPool string) {
 			continue
 		}
 		e := newEgress(fmt.Sprintf("proxy%d", i+1), kindProxy, http.ProxyURL(u))
+		e.tier = 2
 		e.daemon = fmt.Sprintf("proxy%d", i+1)
 		e.ready.Store(true)
 		m.add(e)
-		log.Printf("[Proxy] đã nạp proxy ngoài: %s (%s)", e.Name, p)
+		log.Printf("[ProxyWARP] Tier 2 nạp proxy WARP: %s (%s)", e.Name, p)
 	}
+}
+
+var (
+	resRotMu       sync.Mutex
+	isResRotating  atomic.Bool
+	lastResRotTime = map[string]time.Time{}
+)
+
+func (m *Manager) rotateResidentialProxy(e *Egress) {
+	if e.refreshURL == "" || e.expired.Load() {
+		return
+	}
+	if !isResRotating.CompareAndSwap(false, true) {
+		return
+	}
+	defer func() {
+		time.AfterFunc(10*time.Second, func() {
+			isResRotating.Store(false)
+		})
+	}()
+
+	resRotMu.Lock()
+	if time.Since(e.lastRotate) < 60*time.Second {
+		resRotMu.Unlock()
+		isResRotating.Store(false)
+		return
+	}
+	e.lastRotate = time.Now()
+	resRotMu.Unlock()
+
+	go func() {
+		e.ready.Store(false)
+		defer e.ready.Store(true)
+
+		log.Printf("[ProxyXoay] Đang gọi API đổi IP so le cho %s...", e.Name)
+		req, err := http.NewRequest(http.MethodGet, e.refreshURL, nil)
+		if err != nil {
+			return
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			log.Printf("[ProxyXoay] Lỗi gọi API đổi IP cho %s: %v", e.Name, err)
+			return
+		}
+		defer resp.Body.Close()
+		var res struct {
+			Status  int    `json:"status"`
+			Message string `json:"message"`
+		}
+		if json.NewDecoder(resp.Body).Decode(&res) == nil {
+			if res.Status == 101 || res.Status == 102 {
+				e.expired.Store(true)
+				e.ready.Store(false)
+				log.Printf("[ProxyXoay] Key của %s đã hết hạn (%s)! Tự động loại bỏ hoàn toàn khỏi routing, chuyển sang WARP.", e.Name, res.Message)
+				return
+			}
+			log.Printf("[ProxyXoay] %s đổi IP thành công (%s), chờ warmup 7s...", e.Name, res.Message)
+		}
+		time.Sleep(7 * time.Second)
+		e.clearAll()
+		log.Printf("[ProxyXoay] %s đã sẵn sàng với IP dân cư mới!", e.Name)
+	}()
 }
 
 func (m *Manager) refreshRotatingProxy(e *Egress) {
@@ -565,15 +654,27 @@ func (m *Manager) pickAvoid(model string, avoid ...string) *Egress {
 	if cfg.PreferDirect && !avoidMap[direct.daemon] && direct.available(model) && direct.claim(model) {
 		return direct
 	}
-	if e := m.pickRestAvoid(list[1:], model, avoidMap); e != nil {
+	start := int(atomic.AddUint32(&m.rr, 1))
+	// 1. ƯU TIÊN SỐ 1: Bốc từ Tier 1 (Proxy dân cư sạch)
+	if e := m.pickTierAvoid(list[1:], 1, model, avoidMap, start); e != nil {
 		return e
 	}
+
+	// 2. ƯU TIÊN SỐ 2: Nếu Tier 1 bận/cooldown/đang đổi IP/hết hạn -> Tràn xuống Tier 2 (16 WARP)!
+	if e := m.pickTierAvoid(list[1:], 2, model, avoidMap, start); e != nil {
+		return e
+	}
+
 	if len(avoidMap) > 0 {
-		if e := m.pickRestAvoid(list[1:], model, nil); e != nil {
+		if e := m.pickTierAvoid(list[1:], 1, model, nil, start); e != nil {
+			return e
+		}
+		if e := m.pickTierAvoid(list[1:], 2, model, nil, start); e != nil {
 			return e
 		}
 	}
-	// Tor/proxy chưa sẵn sàng hoặc đều đang nghỉ: direct làm đường dự phòng thay vì bắt client chờ.
+
+	// Direct làm chốt chặn cuối
 	if !cfg.PreferDirect && !avoidMap[direct.daemon] && direct.available(model) && direct.claim(model) {
 		return direct
 	}
@@ -581,6 +682,40 @@ func (m *Manager) pickAvoid(model string, avoid ...string) *Egress {
 		return direct
 	}
 	return nil
+}
+
+func (m *Manager) pickTierAvoid(rest []*Egress, tier int, model string, avoidMap map[string]bool, start int) *Egress {
+	if len(rest) == 0 {
+		return nil
+	}
+	var best *Egress
+	var bestStrikes int
+	var bestScore float64
+	med := m.medianLatency()
+	for i := range rest {
+		e := rest[(start+i)%len(rest)]
+		if e.tier != tier && (tier != 2 || e.tier != 0) {
+			continue
+		}
+		if e.expired.Load() {
+			continue
+		}
+		if len(avoidMap) > 0 && avoidMap[e.daemon] {
+			continue
+		}
+		if !e.available(model) || (e.canRotate && int(e.inflight.Load()) >= cfg.TorMaxInflight) {
+			continue
+		}
+		st := e.strikes(model)
+		sc := e.loadScore(med)
+		if best == nil || st < bestStrikes || (st == bestStrikes && sc < bestScore) {
+			best, bestStrikes, bestScore = e, st, sc
+		}
+	}
+	if best != nil && !best.claim(model) {
+		return nil
+	}
+	return best
 }
 
 func (m *Manager) pickRest(rest []*Egress, model string) *Egress {

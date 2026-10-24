@@ -51,6 +51,9 @@ type Config struct {
 	CORSOrigin     string
 	ProxyRefreshURL      string        // URL gọi để đổi IP cho proxy xoay khi bị 429 (vd: https://proxyxoay.shop/api/get.php?key=...)
 	ProxyWarmup          time.Duration // thời gian chờ proxy xoay IP xong (mặc định 3s)
+	ResidentialProxies     string
+	ResidentialRefreshURLs string
+	AutoModels             string
 
 	// /v1/messages: bơm 4 tool stub của opencode (bash/glob/grep/read). Upstream (FreeTier gate) bắt buộc có.
 	DefaultModel         string
@@ -143,6 +146,9 @@ func loadConfig() Config {
 		ProxyRefreshURL:      envStr("PROXY_REFRESH_URL", ""),
 		ProxyWarmup:          envDur("PROXY_WARMUP", 3*time.Second),
 		InjectToolsAnthropic: envBoolDef("INJECT_TOOLS_ANTHROPIC", true),
+		ResidentialProxies:     envStr("RESIDENTIAL_PROXIES", ""),
+		ResidentialRefreshURLs: envStr("RESIDENTIAL_REFRESH_URLS", ""),
+		AutoModels:             envStr("AUTO_MODELS", ""),
 	}
 	for _, m := range splitList(os.Getenv("IMAGE_MODELS")) {
 		c.ImageModels[strings.ToLower(m)] = true

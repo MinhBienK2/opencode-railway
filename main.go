@@ -30,6 +30,14 @@ const (
 
 var (
 	poolMu        sync.RWMutex
+	defaultSolidModels = []string{
+		"glm-5.3-flash-free",
+		"deepseek-v4.1-flash-free",
+		"nemotron-3.5-lightning-free",
+		"big-pickle",
+		"mimo-v2.6-flash-free",
+		"beam-free",
+	}
 	freeModelPool = []string{
 		"glm-5.3-flash-free",
 		"deepseek-v4.1-flash-free",
@@ -39,6 +47,26 @@ var (
 		"beam-free",
 	}
 )
+
+func initFreeModelPool(custom string) []string {
+	if custom != "" {
+		list := splitList(custom)
+		if len(list) > 0 {
+			var normalized []string
+			for _, m := range list {
+				m = strings.ToLower(strings.TrimSpace(m))
+				if !strings.HasSuffix(m, "-free") && m != "big-pickle" {
+					m += "-free"
+				}
+				normalized = append(normalized, m)
+			}
+			return normalized
+		}
+	}
+	cp := make([]string, len(defaultSolidModels))
+	copy(cp, defaultSolidModels)
+	return cp
+}
 
 func prunePool(model string) {
 	poolMu.Lock()
@@ -925,8 +953,13 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	poolMu.Lock()
+	freeModelPool = initFreeModelPool(cfg.AutoModels)
+	poolMu.Unlock()
+	log.Printf("[AutoModels] Pool model mặc định: %v", freeModelPool)
+
 	mgr = newManager(ctx)
-	mgr.addStatic(os.Getenv("TOR_INSTANCES"), os.Getenv("PROXY_POOL"))
+	mgr.addStatic(os.Getenv("TOR_INSTANCES"), os.Getenv("PROXY_POOL"), cfg.ResidentialProxies, cfg.ResidentialRefreshURLs)
 	torAvailable = checkTorBinary()
 	mode := "Tor trước (nhiều identity/daemon), direct dự phòng"
 	if cfg.PreferDirect {

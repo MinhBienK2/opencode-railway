@@ -440,9 +440,12 @@ func forward(ctx context.Context, model string, isPool bool, url, accept, key st
 				mgr.prewarmTor("direct vừa bị 429", 2)
 			}
 			if e.Kind == kindProxy {
-				mgr.refreshRotatingProxy(e)
-				if bytes.Contains(snippet, []byte("FreeUsageLimitError")) || bytes.Contains(snippet, []byte("Free usage limit reached")) || ra > 30*time.Minute {
-					renewWarpProxy(e.Name)
+				if e.tier == 1 && e.refreshURL != "" {
+					mgr.rotateResidentialProxy(e)
+				} else if e.tier == 2 {
+					if bytes.Contains(snippet, []byte("FreeUsageLimitError")) || bytes.Contains(snippet, []byte("Free usage limit reached")) || ra > 30*time.Minute {
+						renewWarpProxy(e.Name)
+					}
 				}
 			}
 			e.rotate(gen)
