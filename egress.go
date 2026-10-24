@@ -515,7 +515,8 @@ func (m *Manager) rotateResidentialProxy(e *Egress) {
 		if err != nil {
 			return
 		}
-		resp, err := http.DefaultClient.Do(req)
+		client := &http.Client{Timeout: 10 * time.Second}
+		resp, err := client.Do(req)
 		if err != nil {
 			log.Printf("[ProxyXoay] Lỗi gọi API đổi IP cho %s: %v", e.Name, err)
 			return
@@ -534,7 +535,11 @@ func (m *Manager) rotateResidentialProxy(e *Egress) {
 			}
 			log.Printf("[ProxyXoay] %s đổi IP thành công (%s), chờ warmup 7s...", e.Name, res.Message)
 		}
-		time.Sleep(7 * time.Second)
+		warmup := cfg.ProxyWarmup
+		if warmup <= 0 {
+			warmup = 7 * time.Second
+		}
+		time.Sleep(warmup)
 		e.clearAll()
 		log.Printf("[ProxyXoay] %s đã sẵn sàng với IP dân cư mới!", e.Name)
 	}()
